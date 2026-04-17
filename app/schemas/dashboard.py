@@ -1,0 +1,24 @@
+from datetime import date, datetime
+from typing import List, Optional
+
+from pydantic import BaseModel
+
+
+class DashboardRecordRow(BaseModel):
+    """대시보드 테이블에 표시되는 기록 행"""
+    record_id:           int
+    patient_id:          int
+    patient_name:        str
+    submitted_at:        Optional[str]  # ISO 8601 문자열
+    status:              str            # submitted | reviewed | rejected
+    unreviewed_ai_count: int
+
+
+class DashboardResponse(BaseModel):
+    """GET /api/v1/dashboard 응답"""
+    today:           str   # YYYY-MM-DD
+    total_submitted: int
+    pending_count:   int
+    approved_count:  int
+    total_patients:  int
+    records:         List[DashboardRecordRow]
