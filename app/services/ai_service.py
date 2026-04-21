@@ -11,8 +11,10 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-# LM Studio 기본 주소 (변경 필요 없음)
-LM_STUDIO_BASE_URL = "http://localhost:1234/v1"
+# LM Studio 주소
+# Docker 컨테이너 내부에서 Windows 호스트의 LM Studio에 접근할 때는 host.docker.internal 사용
+# 로컬 직접 실행 시에는 localhost로 변경
+LM_STUDIO_BASE_URL = "http://host.docker.internal:1234/v1"
 LM_STUDIO_API_KEY = "lm-studio"  # LM Studio는 아무 값이나 OK
 
 
