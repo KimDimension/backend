@@ -18,6 +18,12 @@ class RecordStatus(str, enum.Enum):
     rejected  = "rejected"    # 의사 반려
 
 
+class RiskLevel(str, enum.Enum):
+    normal  = "normal"   # 정상
+    caution = "caution"  # 주의
+    urgent  = "urgent"   # 긴급
+
+
 class DailyRecord(Base):
     __tablename__ = "daily_records"
 
@@ -60,6 +66,14 @@ class DailyRecord(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+    # ── AI 분석 결과 ───────────────────────────────────────────
+    risk_level: Mapped[Optional[RiskLevel]] = mapped_column(
+        Enum(RiskLevel, name="risk_level_enum"),
+        nullable=True,
+    )
+    ai_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # 의사용 AI 요약
+    emr_soap: Mapped[Optional[str]]   = mapped_column(Text, nullable=True)   # S/O/A/P EMR
 
     # ── 관계 ───────────────────────────────────────────────────
     exchange_records = relationship(

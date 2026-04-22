@@ -13,6 +13,7 @@ from app.models import question as _question_models  # noqa: F401
 from app.models import chunk as _chunk_models        # noqa: F401
 from app.models import hospital as _hospital_models  # noqa: F401
 from app.models import registration as _registration_models  # noqa: F401
+from app.models import conversation as _conversation_models  # noqa: F401
 from app.models.hospital import Hospital, DoctorLicense, DoctorProfile
 from app.models.registration import PatientRegistration, RegistrationStatus
 

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.models.conversation import Conversation
 from app.models.question import AIQuestion, AIQuestionStatus
 from app.models.record import DailyRecord, RecordStatus
 from app.models.user import User, UserRole
@@ -84,6 +85,16 @@ def get_dashboard(
 		)
 		ai_counts = {row.daily_record_id: row.cnt for row in rows}
 
+	# ── 대화 세션 ID — record_id별 매핑 ──────────────────────
+	conv_map: dict[int, int] = {}
+	if record_ids:
+		convs = (
+			db.query(Conversation.daily_record_id, Conversation.id)
+			.filter(Conversation.daily_record_id.in_(record_ids))
+			.all()
+		)
+		conv_map = {c.daily_record_id: c.id for c in convs}
+
 	# ── 통계 계산 ─────────────────────────────────────────────
 	total_submitted = len(day_records)
 	pending_count   = sum(1 for rec, _ in day_records if rec.status == RecordStatus.submitted)
@@ -98,9 +109,16 @@ def get_dashboard(
 			submitted_at        = rec.submitted_at.isoformat() if rec.submitted_at else None,
 			status              = rec.status.value,
 			unreviewed_ai_count = ai_counts.get(rec.id, 0),
+			risk_level          = rec.risk_level.value if rec.risk_level else None,
+			ai_summary          = rec.ai_summary,
+			conversation_id     = conv_map.get(rec.id),
 		)
 		for rec, patient in day_records
 	]
+
+	# 긴급 환자 최상단 고정 (urgent → caution → normal → None 순)
+	_risk_order = {"urgent": 0, "caution": 1, "normal": 2, None: 3}
+	records_out.sort(key=lambda r: _risk_order.get(r.risk_level, 3))
 
 	return DashboardResponse(
 		today           = target_date.isoformat(),

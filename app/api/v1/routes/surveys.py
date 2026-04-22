@@ -1,9 +1,15 @@
-import json
+"""
+설문 API
+- 공통 질문 + AI 맞춤 질문 조회/응답
+- AI 질문 생성: ai/ 서버(포트 8001) HTTP 호출로 위임
+- 규칙 기반 질문은 백엔드에서 즉시 생성, AI 보완은 백그라운드로 처리
+"""
 import logging
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+import httpx
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
@@ -15,16 +21,16 @@ from app.models.survey import SurveyResponse, SurveyChoice, RejectedQPattern
 from app.models.user import User, UserRole
 from app.schemas.question import AIQuestionResponse
 from app.schemas.survey import SurveySubmitRequest, SurveySubmitResponse
-from app.services.ai_service import generate_questions_via_lm_studio
-from app.services.rag_service import search_kdigo_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/surveys", tags=["설문"])
 
-# LM Studio 백그라운드 처리 중인 record_id 추적 (중복 실행 방지)
-_lm_in_progress: set = set()
+AI_SERVER_URL = "http://ai:8001"   # docker-compose 서비스명
 
-MAX_AI_QUESTIONS = 3  # AI 질문 최대 개수
+# 백그라운드 AI 질문 생성 중인 record_id 추적 (중복 실행 방지)
+_ai_in_progress: set = set()
+
+MAX_AI_QUESTIONS = 3
 
 
 # ── GET AI 맞춤 질문 조회 ──────────────────────────────────
@@ -47,8 +53,7 @@ def get_ai_questions(
     if record.patient_id != current_user.id:
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다.")
 
-    # 이미 생성 중이면 빈 리스트 (프론트 폴링 대기)
-    if record_id in _lm_in_progress:
+    if record_id in _ai_in_progress:
         return []
 
     return (
@@ -72,11 +77,6 @@ def save_survey_responses(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    - 답변이 있는 항목만 저장 (choice 또는 text_answer)
-    - 이미 응답이 있으면 덮어쓰기 (upsert)
-    - 부분 저장 가능, 추후 미답변 항목 추가 가능
-    """
     if current_user.role != UserRole.patient:
         raise HTTPException(status_code=403, detail="환자만 접근할 수 있습니다.")
 
@@ -88,11 +88,9 @@ def save_survey_responses(
 
     saved = 0
     for item in body.responses:
-        # 빈 답변은 건너뜀
         if item.choice is None and not item.text_answer:
             continue
 
-        # 기존 응답 조회
         existing = (
             db.query(SurveyResponse)
             .filter(
@@ -104,13 +102,11 @@ def save_survey_responses(
         )
 
         if existing:
-            # 업데이트
             if item.choice is not None:
                 existing.choice = SurveyChoice(item.choice)
             existing.text_answer = item.text_answer or ""
             existing.answered_at = datetime.now(timezone.utc)
         else:
-            # 신규 저장
             db.add(SurveyResponse(
                 daily_record_id=body.record_id,
                 patient_id=current_user.id,
@@ -139,10 +135,6 @@ def get_my_survey_responses(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    공통 질문 + AI 질문 전체를 반환하며, 답변 여부와 관계없이 모두 포함.
-    answered=True 인 항목에만 choice/text_answer 값이 있음.
-    """
     if current_user.role != UserRole.patient:
         raise HTTPException(status_code=403, detail="환자만 접근할 수 있습니다.")
 
@@ -152,7 +144,6 @@ def get_my_survey_responses(
     if record.patient_id != current_user.id:
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다.")
 
-    # 기존 응답 맵 { (question_id, question_type): SurveyResponse }
     responses = (
         db.query(SurveyResponse)
         .filter(SurveyResponse.daily_record_id == record_id)
@@ -160,12 +151,7 @@ def get_my_survey_responses(
     )
     resp_map = {(r.question_id, r.question_type): r for r in responses}
 
-    # 공통 질문 (활성화된 것만)
-    common_qs = (
-        db.query(CommonQuestion)
-        .filter(CommonQuestion.is_active == True)
-        .all()
-    )
+    common_qs = db.query(CommonQuestion).filter(CommonQuestion.is_active == True).all()
     common_out = []
     for q in common_qs:
         r = resp_map.get((q.id, "common"))
@@ -178,7 +164,6 @@ def get_my_survey_responses(
             "answered":      r is not None,
         })
 
-    # AI 질문 (이 기록용)
     ai_qs = (
         db.query(AIQuestion)
         .filter(
@@ -201,9 +186,7 @@ def get_my_survey_responses(
 
     total_count    = len(common_out) + len(ai_out)
     answered_count = sum(1 for q in common_out + ai_out if q["answered"])
-
-    # AI 질문 생성 중인지 여부
-    ai_pending = record_id in _lm_in_progress
+    ai_pending     = record_id in _ai_in_progress
 
     return {
         "common_questions": common_out,
@@ -224,13 +207,9 @@ def get_survey_responses(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    의사용: 공통 질문 + AI 질문 전체 반환 (미답변 포함)
-    """
     if current_user.role != UserRole.doctor:
         raise HTTPException(status_code=403, detail="의사만 접근할 수 있습니다.")
 
-    # 기존 응답 맵
     responses = (
         db.query(SurveyResponse)
         .filter(SurveyResponse.daily_record_id == record_id)
@@ -238,7 +217,6 @@ def get_survey_responses(
     )
     resp_map = {(r.question_id, r.question_type): r for r in responses}
 
-    # 공통 질문
     common_qs = db.query(CommonQuestion).filter(CommonQuestion.is_active == True).all()
     result = []
     for q in common_qs:
@@ -253,7 +231,6 @@ def get_survey_responses(
             "answered_at":   r.answered_at.isoformat() if r else None,
         })
 
-    # AI 질문
     ai_qs = (
         db.query(AIQuestion)
         .filter(
@@ -277,9 +254,9 @@ def get_survey_responses(
     return result
 
 
-# ── 규칙 기반 질문 생성 (동기, 즉시 반환용) ──────────────────
+# ── 규칙 기반 질문 생성 (즉시, 동기) ──────────────────────
 def _generate_rule_based(db: Session, record: DailyRecord):
-    """KDIGO 규칙 5가지로 이상 징후 탐지 → 즉시 반환 가능한 질문 생성"""
+    """KDIGO 5가지 규칙으로 이상 징후 감지 → 즉시 질문 반환"""
     recent = (
         db.query(DailyRecord)
         .filter(
@@ -341,26 +318,23 @@ def _generate_rule_based(db: Session, record: DailyRecord):
             generated.append({"question_text": rule["question"], "reason": rule["reason"]})
 
     record_data = {
-        "weight": float(record.weight) if record.weight else None,
-        "blood_pressure": record.blood_pressure,
-        "total_uf": float(record.total_ultrafiltration) if record.total_ultrafiltration else None,
-        "turbid": record.turbid_peritoneal,
-        "blood_sugar": float(record.fasting_blood_glucose) if record.fasting_blood_glucose else None,
-        "memo": record.memo,
-        "recent_uf_7d": [float(r.total_ultrafiltration) for r in recent if r.total_ultrafiltration],
+        "weight":                float(record.weight) if record.weight else None,
+        "blood_pressure":        record.blood_pressure,
+        "total_ultrafiltration": float(record.total_ultrafiltration) if record.total_ultrafiltration else None,
+        "turbid_peritoneal":     record.turbid_peritoneal,
+        "fasting_blood_glucose": float(record.fasting_blood_glucose) if record.fasting_blood_glucose else None,
+        "memo":                  record.memo,
     }
 
-    return generated, record_data, rejected_keys
+    return generated, record_data, list(rejected_keys)
 
 
-# ── LM Studio 백그라운드 질문 생성 ──────────────────────────
-def _lm_question_background(
-    record_id: int,
-    patient_id: int,
-    record_data: dict,
-    rejected_keys: list,
-):
-    """백그라운드에서 RAG + LM Studio로 AI 질문 보완 후 DB 저장"""
+# ── AI 서버 백그라운드 질문 보완 ──────────────────────────
+def _ai_question_background(record_id: int, patient_id: int, record_data: dict, rejected_keys: list):
+    """
+    백그라운드에서 ai/ 서버의 /ai-questions/generate 호출
+    → 규칙 기반으로 부족한 질문 Gemini로 보완 → DB 저장
+    """
     db = SessionLocal()
     try:
         current_count = db.query(AIQuestion).filter(
@@ -368,16 +342,20 @@ def _lm_question_background(
         ).count()
 
         if current_count >= MAX_AI_QUESTIONS:
-            logger.info(f"record_id={record_id} 이미 질문 {current_count}개 — LM Studio 생략")
+            logger.info(f"record_id={record_id} 이미 질문 {current_count}개 — AI 서버 생략")
             return
 
-        kdigo_context = search_kdigo_context(record_data, db)
-        lm_questions = generate_questions_via_lm_studio(
-            record_data, rejected_keys, kdigo_context=kdigo_context
-        )
+        # ai/ 서버 호출 (동기 httpx)
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(
+                f"{AI_SERVER_URL}/ai-questions/generate",
+                json={"record_data": record_data, "rejected_keys": rejected_keys},
+            )
+            resp.raise_for_status()
+            ai_questions = resp.json().get("questions", [])
 
         added = 0
-        for q_data in lm_questions:
+        for q_data in ai_questions:
             current_count = db.query(AIQuestion).filter(
                 AIQuestion.daily_record_id == record_id
             ).count()
@@ -392,13 +370,13 @@ def _lm_question_background(
             added += 1
 
         db.commit()
-        logger.info(f"백그라운드 LM Studio 질문 {added}개 저장 완료 (record_id={record_id})")
+        logger.info(f"AI 서버 질문 {added}개 저장 완료 (record_id={record_id})")
 
     except Exception as e:
-        logger.warning(f"백그라운드 LM Studio 질문 생성 실패 (record_id={record_id}): {e}")
+        logger.warning(f"AI 서버 질문 생성 실패 (record_id={record_id}): {e}")
         db.rollback()
     finally:
-        _lm_in_progress.discard(record_id)
+        _ai_in_progress.discard(record_id)
         db.close()
 
 
@@ -427,5 +405,8 @@ def _check_weight_increase(records):
 
 
 def _check_blood_sugar(records):
-    return bool(records and records[0].fasting_blood_glucose
-                and float(records[0].fasting_blood_glucose) > 180)
+    return bool(
+        records
+        and records[0].fasting_blood_glucose
+        and float(records[0].fasting_blood_glucose) > 180
+    )
