@@ -135,11 +135,11 @@ def finalize_record(
     db.commit()
     db.refresh(record)
 
-    # AI 질문 생성 (규칙 기반 즉시 + LM Studio 백그라운드)
+    # AI 질문 생성 (규칙 기반 즉시 + AI 백그라운드)
     from app.api.v1.routes.surveys import (
         _generate_rule_based,
-        _lm_question_background,
-        _lm_in_progress,
+        _ai_question_background,
+        _ai_in_progress,
         MAX_AI_QUESTIONS,
     )
 
@@ -160,9 +160,9 @@ def finalize_record(
     db.commit()
 
     if len(rule_questions) < MAX_AI_QUESTIONS:
-        _lm_in_progress.add(record_id)
+        _ai_in_progress.add(record_id)
         background_tasks.add_task(
-            _lm_question_background,
+            _ai_question_background,
             record_id=record_id,
             patient_id=current_user.id,
             record_data=record_data,
