@@ -15,6 +15,13 @@ class AIQuestionStatus(str, enum.Enum):
     rejected_global      = "rejected_global"         # 전체 환자 거절
 
 
+class AIQuestionType(str, enum.Enum):
+    yes_no        = "yes_no"         # 예/아니오 (기존 방식)
+    single_select = "single_select"  # 단일 선택 (라디오)
+    multi_select  = "multi_select"   # 다중 선택 (체크박스)
+    short_text    = "short_text"     # 단답 텍스트 입력
+
+
 class CommonQuestion(Base):
     """의사가 등록한 공통 질문"""
     __tablename__ = "common_questions"
@@ -51,7 +58,13 @@ class AIQuestion(Base):
         BigInteger, ForeignKey("users.id"), nullable=False, index=True
     )
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
-    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 💡 생성 이유
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)          # 생성 이유
+    question_type: Mapped[AIQuestionType] = mapped_column(
+        Enum(AIQuestionType, name="ai_question_type_enum"),
+        default=AIQuestionType.yes_no,
+        nullable=False,
+    )
+    options: Mapped[Optional[str]] = mapped_column(Text, nullable=True)         # JSON 배열 문자열 (선택지)
     status: Mapped[AIQuestionStatus] = mapped_column(
         Enum(AIQuestionStatus, name="ai_question_status_enum"),
         default=AIQuestionStatus.pending,
