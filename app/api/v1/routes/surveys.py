@@ -7,7 +7,7 @@
 """
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 import httpx
@@ -431,6 +431,106 @@ def _check_blood_sugar(records):
     )
 
 
+# ── 30일 집계 계산 ───────────────────────────────────────
+def _compute_historical_context(db: Session, patient_id: int, current_record_id: int) -> dict:
+    """
+    최근 30일 기록(오늘 제외)을 집계하여 추세 컨텍스트 반환.
+    기록이 2개 미만이면 빈 dict 반환.
+    """
+    from datetime import date as date_type
+    cutoff = datetime.now(timezone.utc).date() - timedelta(days=30)
+
+    records = (
+        db.query(DailyRecord)
+        .filter(
+            DailyRecord.patient_id == patient_id,
+            DailyRecord.id != current_record_id,
+            DailyRecord.record_date >= cutoff,
+        )
+        .order_by(DailyRecord.record_date.desc())
+        .all()
+    )
+
+    if len(records) < 2:
+        return {}
+
+    days = len(records)
+
+    # 혈압 집계
+    bp_systolics = []
+    for r in records:
+        try:
+            bp_systolics.append(int(r.blood_pressure.split("/")[0]))
+        except Exception:
+            pass
+    bp_ctx = {}
+    if bp_systolics:
+        bp_ctx = {
+            "avg": str(round(sum(bp_systolics) / len(bp_systolics))),
+            "max": str(max(bp_systolics)),
+            "min": str(min(bp_systolics)),
+            "trend": "상승" if len(bp_systolics) >= 3 and bp_systolics[0] > bp_systolics[-1] + 5
+                     else "하강" if len(bp_systolics) >= 3 and bp_systolics[0] < bp_systolics[-1] - 5
+                     else "안정",
+        }
+
+    # 체중 집계
+    weights = [float(r.weight) for r in records if r.weight is not None]
+    wt_ctx = {}
+    if weights:
+        avg_wt = round(sum(weights) / len(weights), 1)
+        recent_7 = weights[:7]
+        old_7 = weights[7:14] if len(weights) >= 14 else weights[len(recent_7):]
+        delta_7d = round(recent_7[0] - recent_7[-1], 1) if len(recent_7) >= 2 else 0.0
+        wt_ctx = {
+            "avg": avg_wt,
+            "delta_7d": delta_7d,
+            "trend": "증가" if delta_7d > 0.5 else "감소" if delta_7d < -0.5 else "안정",
+        }
+
+    # UF량 주간 평균
+    ufs = [(r.record_date, float(r.total_ultrafiltration)) for r in records if r.total_ultrafiltration is not None]
+    uf_ctx = {}
+    if ufs:
+        # 주차별 평균 (최대 3주)
+        weekly: list[list[float]] = [[], [], []]
+        for rec_date, uf_val in ufs:
+            days_ago = (datetime.now(timezone.utc).date() - rec_date).days
+            week_idx = min(days_ago // 7, 2)
+            weekly[week_idx].append(uf_val)
+        weekly_avgs = [round(sum(w) / len(w)) for w in weekly if w]
+        uf_trend = "감소" if len(weekly_avgs) >= 2 and weekly_avgs[0] < weekly_avgs[-1] - 100 \
+                   else "증가" if len(weekly_avgs) >= 2 and weekly_avgs[0] > weekly_avgs[-1] + 100 \
+                   else "안정"
+        uf_ctx = {"weekly_avg": weekly_avgs, "trend": uf_trend}
+
+    # 혈당 집계
+    glucoses = [float(r.fasting_blood_glucose) for r in records if r.fasting_blood_glucose is not None]
+    gl_ctx = {}
+    if glucoses:
+        gl_ctx = {
+            "avg": round(sum(glucoses) / len(glucoses), 1),
+            "max": max(glucoses),
+        }
+
+    # 위험도 이력
+    risk_summary = {"urgent": 0, "caution": 0, "normal": 0}
+    for r in records:
+        if r.risk_level:
+            key = r.risk_level.value if hasattr(r.risk_level, "value") else str(r.risk_level)
+            if key in risk_summary:
+                risk_summary[key] += 1
+
+    return {
+        "days": days,
+        "bp": bp_ctx,
+        "weight": wt_ctx,
+        "uf": uf_ctx,
+        "glucose": gl_ctx,
+        "risk_summary": risk_summary,
+    }
+
+
 # ── POST 설문 완료 + AI 요약 트리거 ──────────────────────
 @router.post(
     "/complete/{record_id}",
@@ -506,6 +606,9 @@ async def complete_survey(
             "answer":        answer,
         })
 
+    # 30일 집계 컨텍스트 계산
+    historical_context = _compute_historical_context(db, current_user.id, record_id)
+
     # AI 서버에 요약 요청
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -515,6 +618,7 @@ async def complete_survey(
                     "record_data":          record_data,
                     "common_qa":            common_qa,
                     "ai_survey_responses":  ai_survey_responses,
+                    "historical_context":   historical_context,
                 },
             )
             resp.raise_for_status()

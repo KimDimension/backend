@@ -239,6 +239,7 @@ def patient_complete(payload: PatientRegisterComplete, db: Session = Depends(get
         name=reg.name,
         birth_date=reg.birth_date,
         role=UserRole.patient,
+        doctor_id=reg.doctor_id,  # 담당 의사 연결
     )
     db.add(user)
     db.flush()

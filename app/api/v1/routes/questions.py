@@ -2,11 +2,14 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.models.question import CommonQuestion
+from app.models.question import AIQuestion, AIQuestionStatus, CommonQuestion
+from app.models.record import DailyRecord
+from app.models.survey import RejectedQPattern
 from app.models.user import User, UserRole
 from app.schemas.question import (
     CommonQuestionCreate, CommonQuestionUpdate, CommonQuestionResponse
@@ -122,3 +125,107 @@ def toggle_common_question(
     db.commit()
     db.refresh(q)
     return q
+
+
+# ── AI 질문 관련 (의사용) ──────────────────────────────────
+
+class AIQuestionRejectRequest(BaseModel):
+    scope: str  # "patient" | "global"
+
+
+@router.get(
+    "/ai",
+    summary="담당 환자 AI 질문 목록 조회 (의사 전용)",
+)
+def list_ai_questions(
+    patient_id: Optional[int] = Query(None, description="특정 환자 필터링"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """의사가 담당 환자들의 AI 질문 목록을 조회. 생성 이유 포함."""
+    _require_doctor(current_user)
+
+    my_patients = (
+        db.query(User)
+        .filter(User.doctor_id == current_user.id, User.is_active == True)
+        .all()
+    )
+    patient_ids = [p.id for p in my_patients]
+
+    if not patient_ids:
+        return []
+
+    query = (
+        db.query(AIQuestion, DailyRecord, User)
+        .join(DailyRecord, AIQuestion.daily_record_id == DailyRecord.id)
+        .join(User, AIQuestion.patient_id == User.id)
+        .filter(
+            AIQuestion.patient_id.in_(patient_ids),
+            AIQuestion.status != AIQuestionStatus.rejected_global,
+        )
+    )
+    if patient_id:
+        query = query.filter(AIQuestion.patient_id == patient_id)
+
+    rows = query.order_by(AIQuestion.created_at.desc()).limit(200).all()
+
+    return [
+        {
+            "id":            q.id,
+            "patient_id":    q.patient_id,
+            "patient_name":  patient.name,
+            "record_id":     record.id,
+            "record_date":   record.record_date.isoformat(),
+            "question_text": q.question_text,
+            "question_type": q.question_type.value,
+            "reason":        q.reason,
+            "status":        q.status.value,
+            "created_at":    q.created_at.isoformat(),
+        }
+        for q, record, patient in rows
+    ]
+
+
+@router.post(
+    "/ai/{question_id}/reject",
+    summary="AI 질문 거절 (의사 전용)",
+)
+def reject_ai_question(
+    question_id: int,
+    body: AIQuestionRejectRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    AI 질문 거절.
+    - scope="patient": 해당 환자에게만 이 패턴 거절
+    - scope="global":  전체 환자에게 이 패턴 전역 거절
+    """
+    _require_doctor(current_user)
+
+    if body.scope not in ("patient", "global"):
+        raise HTTPException(status_code=400, detail="scope는 'patient' 또는 'global'이어야 합니다.")
+
+    q = db.query(AIQuestion).filter(AIQuestion.id == question_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="질문을 찾을 수 없습니다.")
+
+    if body.scope == "global":
+        q.status = AIQuestionStatus.rejected_global
+        existing = db.query(RejectedQPattern).filter(
+            RejectedQPattern.pattern == q.question_text,
+            RejectedQPattern.patient_id.is_(None),
+        ).first()
+        if not existing:
+            db.add(RejectedQPattern(pattern=q.question_text, patient_id=None))
+    else:
+        q.status = AIQuestionStatus.rejected_for_patient
+        existing = db.query(RejectedQPattern).filter(
+            RejectedQPattern.pattern == q.question_text,
+            RejectedQPattern.patient_id == q.patient_id,
+        ).first()
+        if not existing:
+            db.add(RejectedQPattern(pattern=q.question_text, patient_id=q.patient_id))
+
+    db.commit()
+    return {"success": True, "scope": body.scope, "question_id": question_id}

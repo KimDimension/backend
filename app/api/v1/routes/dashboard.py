@@ -46,21 +46,28 @@ def get_dashboard(
 
 	target_date = record_date or date.today()
 
-	# ── 활성 환자 목록 (드롭다운용) ───────────────────────────
+	# ── 활성 환자 목록 (드롭다운용) — 본인 담당 환자만 ──────────
 	all_patients: List[User] = (
 		db.query(User)
-		.filter(User.role == UserRole.patient, User.is_active == True)
+		.filter(
+			User.role == UserRole.patient,
+			User.is_active == True,
+			User.doctor_id == current_user.id,
+		)
 		.order_by(User.name)
 		.all()
 	)
 	total_patients = len(all_patients)
 	patients_out = [PatientSummary(id=p.id, name=p.name) for p in all_patients]
 
-	# ── 해당 날짜 기록 목록 (환자 정보 JOIN) ──────────────────
+	# ── 해당 날짜 기록 목록 (환자 정보 JOIN) — 본인 담당 환자만 ──
 	query = (
 		db.query(DailyRecord, User)
 		.join(User, DailyRecord.patient_id == User.id)
-		.filter(DailyRecord.record_date == target_date)
+		.filter(
+			DailyRecord.record_date == target_date,
+			User.doctor_id == current_user.id,
+		)
 	)
 	if patient_id is not None:
 		query = query.filter(DailyRecord.patient_id == patient_id)
