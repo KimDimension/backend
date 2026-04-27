@@ -14,7 +14,6 @@ class DashboardRecordRow(BaseModel):
     unreviewed_ai_count: int
     risk_level:          Optional[str]   # normal | caution | urgent | None(미완료)
     ai_summary:          Optional[str]   # AI 요약 (없으면 None)
-    conversation_id:     Optional[int]   # 대화 세션 ID (대화보기 버튼용)
 
 
 class PatientSummary(BaseModel):
