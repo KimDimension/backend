@@ -298,7 +298,7 @@ def _ai_question_background(
             return
 
         # ai/ 서버 호출 (동기 httpx)
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=90.0) as client:
             resp = client.post(
                 f"{AI_SERVER_URL}/ai-questions/generate",
                 json={
