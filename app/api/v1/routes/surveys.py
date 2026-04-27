@@ -158,9 +158,18 @@ def get_my_survey_responses(
     common_out = []
     for q in common_qs:
         r = resp_map.get((q.id, "common"))
+        # options JSON 파싱
+        c_options = None
+        if q.options:
+            try:
+                c_options = json.loads(q.options)
+            except Exception:
+                c_options = None
         common_out.append({
             "question_id":   q.id,
             "question_text": q.question_text,
+            "question_type": q.question_type.value if q.question_type else "yes_no",
+            "options":       c_options,
             "reason":        None,
             "choice":        r.choice.value if r and r.choice else None,
             "text_answer":   r.text_answer if r else None,

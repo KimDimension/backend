@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -7,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.models.question import AIQuestion, AIQuestionStatus, CommonQuestion
+from app.models.question import AIQuestion, AIQuestionStatus, AIQuestionType, CommonQuestion
 from app.models.record import DailyRecord
 from app.models.survey import RejectedQPattern
 from app.models.user import User, UserRole
@@ -23,7 +24,6 @@ def _require_doctor(current_user: User):
         raise HTTPException(status_code=403, detail="의사만 접근할 수 있습니다.")
 
 
-# ── GET 공통 질문 목록 ─────────────────────────────────────
 @router.get(
     "/common",
     response_model=List[CommonQuestionResponse],
@@ -40,7 +40,6 @@ def list_common_questions(
     return q.order_by(CommonQuestion.created_at.asc()).all()
 
 
-# ── POST 공통 질문 생성 ────────────────────────────────────
 @router.post(
     "/common",
     response_model=CommonQuestionResponse,
@@ -53,14 +52,26 @@ def create_common_question(
     current_user: User = Depends(get_current_user),
 ):
     _require_doctor(current_user)
-    q = CommonQuestion(doctor_id=current_user.id, question_text=body.question_text)
+    try:
+        q_type = AIQuestionType(body.question_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"유효하지 않은 질문 유형: {body.question_type}")
+    options_json = None
+    if q_type in (AIQuestionType.single_select, AIQuestionType.multi_select):
+        if body.options:
+            options_json = json.dumps(body.options, ensure_ascii=False)
+    q = CommonQuestion(
+        doctor_id=current_user.id,
+        question_text=body.question_text,
+        question_type=q_type,
+        options=options_json,
+    )
     db.add(q)
     db.commit()
     db.refresh(q)
     return q
 
 
-# ── PATCH 공통 질문 수정 ───────────────────────────────────
 @router.patch(
     "/common/{question_id}",
     response_model=CommonQuestionResponse,
@@ -78,6 +89,21 @@ def update_common_question(
         raise HTTPException(status_code=404, detail="질문을 찾을 수 없습니다.")
     if body.question_text is not None:
         q.question_text = body.question_text
+    if body.question_type is not None:
+        try:
+            q.question_type = AIQuestionType(body.question_type)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"유효하지 않은 질문 유형: {body.question_type}")
+    if body.options is not None:
+        q_type = q.question_type
+        if q_type in (AIQuestionType.single_select, AIQuestionType.multi_select):
+            q.options = json.dumps(body.options, ensure_ascii=False)
+        else:
+            q.options = None
+    elif body.question_type is not None:
+        new_type = AIQuestionType(body.question_type)
+        if new_type not in (AIQuestionType.single_select, AIQuestionType.multi_select):
+            q.options = None
     if body.is_active is not None:
         q.is_active = body.is_active
     q.updated_at = datetime.now(timezone.utc)
@@ -86,7 +112,6 @@ def update_common_question(
     return q
 
 
-# ── DELETE 공통 질문 삭제 ──────────────────────────────────
 @router.delete(
     "/common/{question_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -105,7 +130,6 @@ def delete_common_question(
     db.commit()
 
 
-# ── PATCH 활성/비활성 토글 ─────────────────────────────────
 @router.patch(
     "/common/{question_id}/toggle",
     response_model=CommonQuestionResponse,
@@ -127,8 +151,6 @@ def toggle_common_question(
     return q
 
 
-# ── AI 질문 관련 (의사용) ──────────────────────────────────
-
 class AIQuestionRejectRequest(BaseModel):
     scope: str  # "patient" | "global"
 
@@ -142,7 +164,6 @@ def list_ai_questions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """의사가 담당 환자들의 AI 질문 목록을 조회. 생성 이유 포함."""
     _require_doctor(current_user)
 
     my_patients = (
@@ -196,11 +217,6 @@ def reject_ai_question(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    AI 질문 거절.
-    - scope="patient": 해당 환자에게만 이 패턴 거절
-    - scope="global":  전체 환자에게 이 패턴 전역 거절
-    """
     _require_doctor(current_user)
 
     if body.scope not in ("patient", "global"):
