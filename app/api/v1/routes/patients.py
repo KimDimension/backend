@@ -55,7 +55,7 @@ def _require_doctor(current_user: User) -> None:
     "",
     response_model=List[PatientInfo],
     summary="나의 환자 목록",
-    description="patient_registrations(completed)로 연결된 담당 환자만 반환.",
+    description="patient_registrations(completed) 또는 users.doctor_id 기준으로 담당 환자 반환 (시드 데이터 호환).",
 )
 def list_patients(
     db: Session = Depends(get_db),
@@ -63,8 +63,8 @@ def list_patients(
 ) -> List[PatientInfo]:
     _require_doctor(current_user)
 
-    # patient_registrations.completed 기준으로 담당 환자 조회
-    patient_ids = (
+    # patient_registrations.completed로 연결된 환자 ID
+    reg_ids = (
         db.query(PatientRegistration.user_id)
         .filter(
             PatientRegistration.doctor_id == current_user.id,
@@ -74,9 +74,18 @@ def list_patients(
         .subquery()
     )
 
+    # OR: users.doctor_id로 직접 연결된 환자 (시드 데이터 등)
+    from sqlalchemy import or_
     patients = (
         db.query(User)
-        .filter(User.id.in_(patient_ids), User.is_active == True)
+        .filter(
+            User.role == UserRole.patient,
+            User.is_active == True,
+            or_(
+                User.id.in_(reg_ids),
+                User.doctor_id == current_user.id,
+            ),
+        )
         .order_by(User.name)
         .all()
     )
@@ -95,18 +104,27 @@ def list_patient_records(
 ) -> PatientRecordsResponse:
     _require_doctor(current_user)
 
-    # 담당 환자인지 확인
-    reg = db.query(PatientRegistration).filter(
-        PatientRegistration.doctor_id == current_user.id,
-        PatientRegistration.user_id == patient_id,
-        PatientRegistration.status == RegistrationStatus.completed,
+    # 담당 환자인지 확인 — registrations 또는 doctor_id 둘 중 하나라도 있으면 허용
+    from sqlalchemy import or_
+    patient_check = db.query(User).filter(
+        User.id == patient_id,
+        User.role == UserRole.patient,
+        User.is_active == True,
+        or_(
+            User.doctor_id == current_user.id,
+            User.id.in_(
+                db.query(PatientRegistration.user_id).filter(
+                    PatientRegistration.doctor_id == current_user.id,
+                    PatientRegistration.status == RegistrationStatus.completed,
+                    PatientRegistration.user_id.isnot(None),
+                )
+            ),
+        ),
     ).first()
-    if not reg:
+    if not patient_check:
         raise HTTPException(status_code=404, detail="담당 환자를 찾을 수 없습니다.")
 
-    patient = db.query(User).filter(User.id == patient_id, User.is_active == True).first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="환자를 찾을 수 없습니다.")
+    patient = patient_check
 
     records = (
         db.query(DailyRecord)
