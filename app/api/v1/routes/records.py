@@ -140,6 +140,7 @@ def finalize_record(
         _generate_rule_based,
         _ai_question_background,
         _ai_in_progress,
+        _compute_historical_context,
         MAX_AI_QUESTIONS,
     )
 
@@ -161,6 +162,8 @@ def finalize_record(
     db.commit()
 
     if len(rule_questions) < MAX_AI_QUESTIONS:
+        # 과거 추세 데이터 계산 (기록 1개부터 활용)
+        historical_context = _compute_historical_context(db, current_user.id, record_id)
         _ai_in_progress.add(record_id)
         background_tasks.add_task(
             _ai_question_background,
@@ -168,6 +171,7 @@ def finalize_record(
             patient_id=current_user.id,
             record_data=record_data,
             rejected_keys=list(rejected_keys),
+            historical_context=historical_context,
         )
 
     db.refresh(record)

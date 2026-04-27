@@ -351,10 +351,17 @@ def _generate_rule_based(db: Session, record: DailyRecord):
 
 
 # ── AI 서버 백그라운드 질문 보완 ──────────────────────────
-def _ai_question_background(record_id: int, patient_id: int, record_data: dict, rejected_keys: list):
+def _ai_question_background(
+    record_id: int,
+    patient_id: int,
+    record_data: dict,
+    rejected_keys: list,
+    historical_context: dict = None,
+):
     """
     백그라운드에서 ai/ 서버의 /ai-questions/generate 호출
     → 규칙 기반으로 부족한 질문 Gemini로 보완 → DB 저장
+    historical_context가 있으면 과거 추세를 포함해 트렌드 기반 질문 생성
     """
     db = SessionLocal()
     try:
@@ -370,7 +377,11 @@ def _ai_question_background(record_id: int, patient_id: int, record_data: dict, 
         with httpx.Client(timeout=30.0) as client:
             resp = client.post(
                 f"{AI_SERVER_URL}/ai-questions/generate",
-                json={"record_data": record_data, "rejected_keys": rejected_keys},
+                json={
+                    "record_data":        record_data,
+                    "rejected_keys":      rejected_keys,
+                    "historical_context": historical_context or {},
+                },
             )
             resp.raise_for_status()
             ai_questions = resp.json().get("questions", [])
@@ -440,11 +451,12 @@ def _check_blood_sugar(records):
     )
 
 
-# ── 30일 집계 계산 ───────────────────────────────────────
+# ── 과거 기록 추세 계산 ───────────────────────────────────
 def _compute_historical_context(db: Session, patient_id: int, current_record_id: int) -> dict:
     """
-    최근 30일 기록(오늘 제외)을 집계하여 추세 컨텍스트 반환.
-    기록이 2개 미만이면 빈 dict 반환.
+    오늘 이전 기록을 최대 30일치 집계하여 추세 컨텍스트 반환.
+    기록이 1개 이상이면 집계 결과를 반환 (트렌드 판단은 3개 이상일 때만 의미 있음).
+    기록이 없으면 빈 dict 반환.
     """
     from datetime import date as date_type
     cutoff = datetime.now(timezone.utc).date() - timedelta(days=30)
@@ -460,7 +472,7 @@ def _compute_historical_context(db: Session, patient_id: int, current_record_id:
         .all()
     )
 
-    if len(records) < 2:
+    if len(records) < 1:
         return {}
 
     days = len(records)
