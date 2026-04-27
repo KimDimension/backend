@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -38,6 +38,11 @@ class CommonQuestion(Base):
     options: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # TRUE: 담당 환자 전원에게 노출 / FALSE: assignments 테이블에 명시된 환자만
+    target_all_patients: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -48,6 +53,37 @@ class CommonQuestion(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
+    )
+
+    patient_assignments: Mapped[List["QuestionPatientAssignment"]] = relationship(
+        "QuestionPatientAssignment",
+        back_populates="question",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+
+
+class QuestionPatientAssignment(Base):
+    """공통 질문 ↔ 특정 환자 연결 (target_all_patients=False 일 때 사용)"""
+    __tablename__ = "question_patient_assignments"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    question_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("common_questions.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    patient_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    question: Mapped["CommonQuestion"] = relationship(
+        "CommonQuestion", back_populates="patient_assignments"
     )
 
 

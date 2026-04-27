@@ -8,9 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.models.question import AIQuestion, AIQuestionStatus, AIQuestionType, CommonQuestion
+from app.models.question import (
+    AIQuestion, AIQuestionStatus, AIQuestionType,
+    CommonQuestion, QuestionPatientAssignment,
+)
 from app.models.record import DailyRecord
-from app.models.survey import RejectedQPattern
+from app.models.survey import RejectedQPattern, SurveyResponse
 from app.models.user import User, UserRole
 from app.schemas.question import (
     CommonQuestionCreate, CommonQuestionUpdate, CommonQuestionResponse
@@ -24,6 +27,46 @@ def _require_doctor(current_user: User):
         raise HTTPException(status_code=403, detail="의사만 접근할 수 있습니다.")
 
 
+def _build_response(q: CommonQuestion) -> CommonQuestionResponse:
+    assigned_ids = [a.patient_id for a in q.patient_assignments]
+    return CommonQuestionResponse(
+        id=q.id,
+        question_text=q.question_text,
+        question_type=q.question_type.value,
+        options=q.options,
+        is_active=q.is_active,
+        target_all_patients=q.target_all_patients,
+        assigned_patient_ids=assigned_ids,
+        created_at=q.created_at,
+        updated_at=q.updated_at,
+    )
+
+
+def _sync_assignments(db: Session, question: CommonQuestion, patient_ids: List[int]):
+    db.query(QuestionPatientAssignment).filter(
+        QuestionPatientAssignment.question_id == question.id
+    ).delete(synchronize_session=False)
+    for pid in set(patient_ids):
+        db.add(QuestionPatientAssignment(question_id=question.id, patient_id=pid))
+
+
+def _delete_survey_responses(db: Session, question_id: int):
+    import logging
+    deleted = (
+        db.query(SurveyResponse)
+        .filter(
+            SurveyResponse.question_id == question_id,
+            SurveyResponse.question_type == "common",
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted:
+        logging.getLogger(__name__).info(
+            f"질문 수정으로 survey_responses {deleted}건 삭제 (question_id={question_id})"
+        )
+
+
+# ── 목록 조회 ──────────────────────────────────────────────
 @router.get(
     "/common",
     response_model=List[CommonQuestionResponse],
@@ -37,9 +80,11 @@ def list_common_questions(
     q = db.query(CommonQuestion)
     if active is not None:
         q = q.filter(CommonQuestion.is_active == active)
-    return q.order_by(CommonQuestion.created_at.asc()).all()
+    questions = q.order_by(CommonQuestion.created_at.asc()).all()
+    return [_build_response(q) for q in questions]
 
 
+# ── 생성 ───────────────────────────────────────────────────
 @router.post(
     "/common",
     response_model=CommonQuestionResponse,
@@ -56,22 +101,31 @@ def create_common_question(
         q_type = AIQuestionType(body.question_type)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"유효하지 않은 질문 유형: {body.question_type}")
+
     options_json = None
     if q_type in (AIQuestionType.single_select, AIQuestionType.multi_select):
         if body.options:
             options_json = json.dumps(body.options, ensure_ascii=False)
+
     q = CommonQuestion(
         doctor_id=current_user.id,
         question_text=body.question_text,
         question_type=q_type,
         options=options_json,
+        target_all_patients=body.target_all_patients,
     )
     db.add(q)
+    db.flush()
+
+    if not body.target_all_patients and body.patient_ids:
+        _sync_assignments(db, q, body.patient_ids)
+
     db.commit()
     db.refresh(q)
-    return q
+    return _build_response(q)
 
 
+# ── 수정 ───────────────────────────────────────────────────
 @router.patch(
     "/common/{question_id}",
     response_model=CommonQuestionResponse,
@@ -87,31 +141,63 @@ def update_common_question(
     q = db.query(CommonQuestion).filter(CommonQuestion.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="질문을 찾을 수 없습니다.")
-    if body.question_text is not None:
+
+    content_changed = False
+
+    if body.question_text is not None and body.question_text != q.question_text:
         q.question_text = body.question_text
+        content_changed = True
+
     if body.question_type is not None:
         try:
-            q.question_type = AIQuestionType(body.question_type)
+            new_type = AIQuestionType(body.question_type)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"유효하지 않은 질문 유형: {body.question_type}")
+        if new_type != q.question_type:
+            q.question_type = new_type
+            content_changed = True
+            if new_type not in (AIQuestionType.single_select, AIQuestionType.multi_select):
+                q.options = None
+
     if body.options is not None:
-        q_type = q.question_type
-        if q_type in (AIQuestionType.single_select, AIQuestionType.multi_select):
-            q.options = json.dumps(body.options, ensure_ascii=False)
+        cur_type = q.question_type
+        if cur_type in (AIQuestionType.single_select, AIQuestionType.multi_select):
+            new_opts = json.dumps(body.options, ensure_ascii=False) if body.options else None
         else:
-            q.options = None
+            new_opts = None
+        if new_opts != q.options:
+            q.options = new_opts
+            content_changed = True
     elif body.question_type is not None:
         new_type = AIQuestionType(body.question_type)
         if new_type not in (AIQuestionType.single_select, AIQuestionType.multi_select):
-            q.options = None
+            if q.options is not None:
+                q.options = None
+                content_changed = True
+
     if body.is_active is not None:
         q.is_active = body.is_active
+
+    if content_changed:
+        _delete_survey_responses(db, question_id)
+
+    if body.target_all_patients is not None:
+        q.target_all_patients = body.target_all_patients
+        if body.target_all_patients:
+            db.query(QuestionPatientAssignment).filter(
+                QuestionPatientAssignment.question_id == question_id
+            ).delete(synchronize_session=False)
+
+    if body.patient_ids is not None:
+        _sync_assignments(db, q, body.patient_ids)
+
     q.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(q)
-    return q
+    return _build_response(q)
 
 
+# ── 삭제 ───────────────────────────────────────────────────
 @router.delete(
     "/common/{question_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -130,6 +216,7 @@ def delete_common_question(
     db.commit()
 
 
+# ── 활성/비활성 토글 ───────────────────────────────────────
 @router.patch(
     "/common/{question_id}/toggle",
     response_model=CommonQuestionResponse,
@@ -148,9 +235,10 @@ def toggle_common_question(
     q.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(q)
-    return q
+    return _build_response(q)
 
 
+# ── AI 질문 ────────────────────────────────────────────────
 class AIQuestionRejectRequest(BaseModel):
     scope: str  # "patient" | "global"
 

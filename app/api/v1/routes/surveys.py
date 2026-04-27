@@ -17,7 +17,7 @@ from sqlalchemy import desc
 
 from app.core.auth import get_current_user
 from app.core.database import get_db, SessionLocal
-from app.models.question import AIQuestion, AIQuestionStatus, AIQuestionType, CommonQuestion
+from app.models.question import AIQuestion, AIQuestionStatus, AIQuestionType, CommonQuestion, QuestionPatientAssignment
 from app.models.record import DailyRecord, RiskLevel
 from app.models.survey import SurveyResponse, SurveyChoice, RejectedQPattern
 from app.models.user import User, UserRole
@@ -153,7 +153,24 @@ def get_my_survey_responses(
     )
     resp_map = {(r.question_id, r.question_type): r for r in responses}
 
-    common_qs = db.query(CommonQuestion).filter(CommonQuestion.is_active == True).all()
+    from sqlalchemy import or_
+    _assigned_q_ids = (
+        db.query(QuestionPatientAssignment.question_id)
+        .filter(QuestionPatientAssignment.patient_id == current_user.id)
+        .subquery()
+    )
+    common_qs = (
+        db.query(CommonQuestion)
+        .filter(
+            CommonQuestion.is_active == True,
+            or_(
+                CommonQuestion.target_all_patients == True,
+                CommonQuestion.id.in_(_assigned_q_ids),
+            ),
+        )
+        .order_by(CommonQuestion.created_at.asc())
+        .all()
+    )
     common_out = []
     for q in common_qs:
         r = resp_map.get((q.id, "common"))
@@ -237,7 +254,25 @@ def get_survey_responses(
     )
     resp_map = {(r.question_id, r.question_type): r for r in responses}
 
-    common_qs = db.query(CommonQuestion).filter(CommonQuestion.is_active == True).all()
+    from sqlalchemy import or_
+    record_obj = db.query(DailyRecord).filter(DailyRecord.id == record_id).first()
+    _pid = record_obj.patient_id if record_obj else None
+    _assigned_dr = (
+        db.query(QuestionPatientAssignment.question_id)
+        .filter(QuestionPatientAssignment.patient_id == _pid)
+        .subquery()
+    ) if _pid else None
+
+    _cq = db.query(CommonQuestion).filter(CommonQuestion.is_active == True)
+    if _assigned_dr is not None:
+        _cq = _cq.filter(
+            or_(
+                CommonQuestion.target_all_patients == True,
+                CommonQuestion.id.in_(_assigned_dr),
+            )
+        )
+    common_qs = _cq.order_by(CommonQuestion.created_at.asc()).all()
+
     result = []
     for q in common_qs:
         r = resp_map.get((q.id, "common"))
@@ -486,8 +521,25 @@ async def complete_survey(
     )
     resp_map = {(r.question_id, r.question_type): r for r in responses}
 
-    # 공통 질문 응답 조립
-    common_qs = db.query(CommonQuestion).filter(CommonQuestion.is_active == True).all()
+    # 공통 질문 응답 조립 (이 환자에게 노출된 질문만)
+    from sqlalchemy import or_
+    _assigned_complete = (
+        db.query(QuestionPatientAssignment.question_id)
+        .filter(QuestionPatientAssignment.patient_id == current_user.id)
+        .subquery()
+    )
+    common_qs = (
+        db.query(CommonQuestion)
+        .filter(
+            CommonQuestion.is_active == True,
+            or_(
+                CommonQuestion.target_all_patients == True,
+                CommonQuestion.id.in_(_assigned_complete),
+            ),
+        )
+        .order_by(CommonQuestion.created_at.asc())
+        .all()
+    )
     common_qa = []
     for q in common_qs:
         r = resp_map.get((q.id, "common"))
