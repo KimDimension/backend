@@ -8,14 +8,12 @@ users 테이블에 gender / address 컬럼 추가.
   docker compose -f docker-compose.prod.yml exec backend \
     python scripts/migrate_add_gender_address.py
 """
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+import os
 import psycopg2
-from app.core.database import DATABASE_URL
 
 def main():
-    conn = psycopg2.connect(DATABASE_URL)
+    db_url = os.environ.get("DATABASE_URL", "postgresql://capd_user:capd_pass@db:5432/capd")
+    conn = psycopg2.connect(db_url)
     cur  = conn.cursor()
 
     # 1. 컬럼 추가 (이미 있으면 무시)
