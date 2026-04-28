@@ -188,6 +188,32 @@ def run():
         count = cur.fetchone()[0]
         print(f"✅ [9] users.hospital_id 복사 완료 — 현재 병원 정보 있는 환자: {count}명")
 
+        # ──────────────────────────────────────────────────────────
+        # 10. doctor_id NULL 환자 → 유일한(첫 번째) 의사로 연결
+        #     시드 데이터 환자들이 담당의 없이 생성된 경우 처리
+        # ──────────────────────────────────────────────────────────
+        cur.execute("""
+            SELECT id FROM users
+            WHERE role = 'doctor' AND is_active = true
+            ORDER BY id
+            LIMIT 1
+        """)
+        doctor_row = cur.fetchone()
+        if doctor_row:
+            default_doctor_id = doctor_row[0]
+            cur.execute("""
+                UPDATE users
+                SET doctor_id = %s
+                WHERE role = 'patient'
+                  AND is_active = true
+                  AND doctor_id IS NULL
+            """, (default_doctor_id,))
+            cur.execute("SELECT COUNT(*) FROM users WHERE role='patient' AND doctor_id = %s", (default_doctor_id,))
+            linked = cur.fetchone()[0]
+            print(f"✅ [10] doctor_id NULL 환자 → 의사(id={default_doctor_id}) 연결 완료 — 총 {linked}명")
+        else:
+            print("⚠️  [10] 등록된 의사가 없어 doctor_id 연결 건너뜀")
+
         conn.commit()
         print("\n🎉 migrate_final.py 전체 완료")
 
