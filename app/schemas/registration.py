@@ -25,10 +25,16 @@ class DoctorRegisterStep2(BaseModel):
 # ── 환자 가입 ───────────────────────────────────────────────────
 
 class PatientRegisterRequest(BaseModel):
-    """환자 인증 요청 (승인 대기)"""
+    """환자 가입 요청 (의사 승인 없이 즉시 가입)"""
     name: str
     birth_date: str          # YYYY-MM-DD
-    hospital_id: int
+    hospital_id: Optional[int] = None
+    phone_number: str
+    password: str
+
+
+class PatientConnectRequest(BaseModel):
+    """기존 환자 → 의사 연결 신청"""
     doctor_id: int
 
 

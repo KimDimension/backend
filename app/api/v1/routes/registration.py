@@ -19,6 +19,7 @@ from app.schemas.registration import (
     DoctorRegisterStep2,
     PatientRegisterRequest,
     PatientRegisterComplete,
+    PatientConnectRequest,
     RegistrationApprove,
     RegistrationReject,
     HospitalResponse,
@@ -124,11 +125,11 @@ def doctor_complete(payload: DoctorRegisterStep2, db: Session = Depends(get_db))
     return {"message": "의사 계정이 생성되었습니다.", "user_id": user.id}
 
 
-# ── 환자 가입 ──────────────────────────────────────────────────
+# ── 환자 가입 (의사 선택 없이 즉시 가입) ──────────────────────
 
 @router.get("/doctors", response_model=list[DoctorSummary])
 def list_doctors(hospital_id: Optional[int] = None, db: Session = Depends(get_db)):
-    """병원별 의사 목록 조회 (환자 가입 시 담당의 선택용)"""
+    """병원별 의사 목록 조회 (담당 연결 신청용)"""
     q = db.query(User, DoctorProfile, Hospital).join(
         DoctorProfile, DoctorProfile.user_id == User.id
     ).join(
@@ -152,112 +153,138 @@ def list_doctors(hospital_id: Optional[int] = None, db: Session = Depends(get_db
 @router.post("/patient/request", status_code=status.HTTP_201_CREATED)
 def patient_request(payload: PatientRegisterRequest, db: Session = Depends(get_db)):
     """
-    환자 가입 요청.
-    - doctor_id가 있으면 → 담당 연결 요청(connect), 의사 승인 대기
-    - doctor_id가 없으면 → 의사 없이 가입 (doctor_id=None, status=pending_no_doctor)
+    환자 가입: 이름 + 생년월일 + 병원 + 전화번호 + 비밀번호 → 즉시 계정 생성.
+    의사 승인 없이 가입 완료. 담당 연결은 로그인 후 마이페이지에서 별도 신청.
     """
-    # 병원 확인
     if payload.hospital_id:
         hospital = db.query(Hospital).filter_by(id=payload.hospital_id).first()
         if not hospital:
             raise HTTPException(status_code=404, detail="해당 병원을 찾을 수 없습니다.")
 
-    # 의사 확인 (선택적)
-    if payload.doctor_id:
-        doctor = db.query(User).filter(
-            User.id == payload.doctor_id, User.role == UserRole.doctor
-        ).first()
-        if not doctor:
-            raise HTTPException(status_code=404, detail="해당 의사를 찾을 수 없습니다.")
+    if get_user_by_phone(db, payload.phone_number):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="이미 사용 중인 전화번호입니다.")
 
-    reg = PatientRegistration(
+    user = User(
+        phone_number=payload.phone_number,
+        password_hash=hash_password(payload.password),
         name=payload.name,
         birth_date=payload.birth_date,
+        role=UserRole.patient,
+        doctor_id=None,
         hospital_id=payload.hospital_id,
-        doctor_id=payload.doctor_id,  # None 허용
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return {"message": "환자 계정이 생성되었습니다.", "user_id": user.id}
+
+
+# ── 환자: 담당 의사 연결 신청 (로그인 후) ──────────────────────
+
+@router.post("/patient/connect-request", status_code=status.HTTP_201_CREATED)
+def patient_connect_request(
+    payload: PatientConnectRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """로그인된 환자 → 의사 연결 신청. 의사 승인 시 담당 연결 완료."""
+    if current_user.role != UserRole.patient:
+        raise HTTPException(status_code=403, detail="환자만 접근할 수 있습니다.")
+    if current_user.doctor_id:
+        raise HTTPException(status_code=400, detail="이미 담당 의사가 있습니다. 먼저 담당 해제 후 신청해주세요.")
+
+    doctor = db.query(User).filter(
+        User.id == payload.doctor_id, User.role == UserRole.doctor
+    ).first()
+    if not doctor:
+        raise HTTPException(status_code=404, detail="해당 의사를 찾을 수 없습니다.")
+
+    # 이미 pending인 연결 요청 확인
+    existing = db.query(PatientRegistration).filter(
+        PatientRegistration.user_id == current_user.id,
+        PatientRegistration.doctor_id == payload.doctor_id,
+        PatientRegistration.request_type == "connect",
+        PatientRegistration.status == RegistrationStatus.pending,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="이미 대기 중인 연결 요청이 있습니다.")
+
+    reg = PatientRegistration(
+        name=current_user.name,
+        birth_date=current_user.birth_date,
+        hospital_id=current_user.hospital_id,
+        doctor_id=payload.doctor_id,
         status=RegistrationStatus.pending,
         request_type="connect",
+        user_id=current_user.id,
     )
     db.add(reg)
     db.commit()
     db.refresh(reg)
+    return {"message": "연결 신청이 전송되었습니다. 담당 의사의 승인을 기다려주세요.", "registration_id": reg.id}
 
-    if payload.doctor_id:
-        msg = "인증 요청이 전송되었습니다. 담당 의사의 승인을 기다려주세요."
-    else:
-        msg = "가입 요청이 접수되었습니다. 담당 의사 없이 가입을 진행합니다."
 
-    return {"message": msg, "registration_id": reg.id}
+@router.get("/patient/my-request")
+def get_my_pending_request(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """환자의 현재 대기 중인 연결/해제 요청 조회"""
+    if current_user.role != UserRole.patient:
+        raise HTTPException(status_code=403, detail="환자만 접근할 수 있습니다.")
+
+    req = db.query(PatientRegistration).filter(
+        PatientRegistration.user_id == current_user.id,
+        PatientRegistration.status == RegistrationStatus.pending,
+    ).order_by(PatientRegistration.created_at.desc()).first()
+
+    if not req:
+        return {"request": None}
+
+    doctor = db.query(User).filter_by(id=req.doctor_id).first() if req.doctor_id else None
+    return {
+        "request": {
+            "id": req.id,
+            "request_type": req.request_type,
+            "doctor_name": doctor.name if doctor else None,
+            "status": req.status,
+        }
+    }
 
 
 @router.delete("/patient/request/{registration_id}", status_code=status.HTTP_200_OK)
-def patient_cancel_request(registration_id: int, db: Session = Depends(get_db)):
-    """환자가 자신의 인증 요청을 취소"""
+def patient_cancel_request(
+    registration_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """환자가 자신의 연결/해제 요청 취소"""
     reg = db.query(PatientRegistration).filter_by(id=registration_id).first()
     if not reg:
-        raise HTTPException(status_code=404, detail="가입 요청을 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다.")
+    if reg.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="본인의 요청만 취소할 수 있습니다.")
     if reg.status != RegistrationStatus.pending:
         raise HTTPException(status_code=400, detail="대기 중인 요청만 취소할 수 있습니다.")
 
     db.delete(reg)
     db.commit()
-    return {"message": "가입 요청이 취소되었습니다."}
+    return {"message": "요청이 취소되었습니다."}
 
 
 @router.get("/patient/status/{registration_id}")
 def get_registration_status(registration_id: int, db: Session = Depends(get_db)):
-    """가입 요청 상태 조회 (환자 폴링용)"""
+    """가입/연결 요청 상태 조회"""
     reg = db.query(PatientRegistration).filter_by(id=registration_id).first()
     if not reg:
-        raise HTTPException(status_code=404, detail="가입 요청을 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다.")
     return {
         "registration_id": reg.id,
         "status": reg.status,
         "reject_reason": reg.reject_reason,
         "request_type": reg.request_type,
     }
-
-
-@router.post("/patient/complete", status_code=status.HTTP_201_CREATED)
-def patient_complete(payload: PatientRegisterComplete, db: Session = Depends(get_db)):
-    """환자 가입 완료: 전화번호 + 비밀번호 설정 → 계정 생성."""
-    reg = db.query(PatientRegistration).filter_by(id=payload.registration_id).first()
-    if not reg:
-        raise HTTPException(status_code=404, detail="가입 요청을 찾을 수 없습니다.")
-
-    # 의사가 있는 경우 승인 필요 / 의사 없는 경우 pending도 허용
-    if reg.doctor_id and reg.status != RegistrationStatus.approved:
-        raise HTTPException(status_code=400, detail="승인된 요청에 대해서만 계정을 생성할 수 있습니다.")
-
-    if get_user_by_phone(db, payload.phone_number):
-        raise HTTPException(status_code=409, detail="이미 사용 중인 전화번호입니다.")
-
-    user = User(
-        phone_number=payload.phone_number,
-        password_hash=hash_password(payload.password),
-        name=reg.name,
-        birth_date=reg.birth_date,
-        role=UserRole.patient,
-        doctor_id=reg.doctor_id,       # None 가능
-        hospital_id=reg.hospital_id,
-    )
-    db.add(user)
-    db.flush()
-
-    reg.status = RegistrationStatus.completed
-    reg.user_id = user.id
-
-    # 담당 의사가 있으면 assignment 생성
-    if reg.doctor_id:
-        assignment = PatientDoctorAssignment(
-            patient_id=user.id,
-            doctor_id=reg.doctor_id,
-            started_at=datetime.now(timezone.utc),
-        )
-        db.add(assignment)
-
-    db.commit()
-    return {"message": "환자 계정이 생성되었습니다.", "user_id": user.id}
 
 
 # ── 의사용: 담당 연결 관리 ─────────────────────────────────────
@@ -267,7 +294,7 @@ def list_pending_registrations(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """의사 대시보드: 대기 중인 담당 연결 요청 목록 (connect + discharge)"""
+    """의사 대시보드: 대기 중인 담당 연결/해제 요청 목록"""
     if current_user.role != UserRole.doctor:
         raise HTTPException(status_code=403, detail="의사만 접근할 수 있습니다.")
 
@@ -296,7 +323,7 @@ def approve_registration(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """의사: 담당 연결 요청 승인"""
+    """의사: 담당 연결/해제 요청 승인"""
     if current_user.role != UserRole.doctor:
         raise HTTPException(status_code=403, detail="의사만 접근할 수 있습니다.")
 
@@ -310,17 +337,48 @@ def approve_registration(
 
     reg.status = RegistrationStatus.approved
 
-    # discharge 요청인 경우 → 즉시 담당 해제 처리
     if reg.request_type == "discharge" and reg.user_id:
+        # 담당 해제 처리
         _handle_discharge_approval(db, current_user.id, reg.user_id)
+    elif reg.request_type == "connect" and reg.user_id:
+        # 기존 환자 담당 연결 처리 (users.doctor_id + assignment 동시 업데이트)
+        _handle_connect_approval(db, current_user.id, reg.user_id)
 
     db.commit()
-    action = "담당 해제가" if reg.request_type == "discharge" else "담당 연결 요청이"
+    action = "담당 해제가" if reg.request_type == "discharge" else "담당 연결이"
     return {"message": f"{action} 승인되었습니다."}
 
 
+def _handle_connect_approval(db: Session, doctor_id: int, patient_id: int):
+    """담당 연결 승인 — assignment 생성 + users.doctor_id 업데이트"""
+    # 기존 현재 담당 assignment가 있으면 종료
+    existing = (
+        db.query(PatientDoctorAssignment)
+        .filter(
+            PatientDoctorAssignment.patient_id == patient_id,
+            PatientDoctorAssignment.ended_at.is_(None),
+        )
+        .first()
+    )
+    if existing:
+        existing.ended_at = datetime.now(timezone.utc)
+
+    # 새 assignment 생성
+    assignment = PatientDoctorAssignment(
+        patient_id=patient_id,
+        doctor_id=doctor_id,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(assignment)
+
+    # users.doctor_id 업데이트
+    patient = db.query(User).filter_by(id=patient_id).first()
+    if patient:
+        patient.doctor_id = doctor_id
+
+
 def _handle_discharge_approval(db: Session, doctor_id: int, patient_id: int):
-    """담당 해제 승인 처리 — assignment ended_at 설정"""
+    """담당 해제 승인 처리 — assignment ended_at 설정 + users.doctor_id NULL"""
     assignment = (
         db.query(PatientDoctorAssignment)
         .filter(
@@ -333,7 +391,6 @@ def _handle_discharge_approval(db: Session, doctor_id: int, patient_id: int):
     if assignment:
         assignment.ended_at = datetime.now(timezone.utc)
 
-    # users.doctor_id NULL 처리
     patient = db.query(User).filter_by(id=patient_id).first()
     if patient and patient.doctor_id == doctor_id:
         patient.doctor_id = None
@@ -368,10 +425,6 @@ def reject_registration(
 class DischargeRequestPayload(BaseModel):
     reason: Optional[str] = None
 
-from pydantic import BaseModel as PydanticBaseModel
-class DischargeRequestPayload(PydanticBaseModel):
-    reason: Optional[str] = None
-
 
 @router.post("/patient/discharge-request", status_code=status.HTTP_201_CREATED)
 def patient_discharge_request(
@@ -385,7 +438,6 @@ def patient_discharge_request(
     if not current_user.doctor_id:
         raise HTTPException(status_code=400, detail="현재 담당 의사가 없습니다.")
 
-    # 이미 pending인 해제 요청이 있는지 확인
     existing = db.query(PatientRegistration).filter(
         PatientRegistration.user_id == current_user.id,
         PatientRegistration.doctor_id == current_user.doctor_id,
