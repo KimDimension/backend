@@ -48,6 +48,8 @@ class PatientOverview(BaseModel):
     id:                     int
     name:                   str
     phone_number:           str
+    birth_date:             Optional[str] = None
+    gender:                 Optional[str] = None   # 'm' | 'f'
     total_records:          int
     last_record_date:       Optional[str]
     last_submitted_at:      Optional[str]
@@ -205,6 +207,8 @@ def list_patients_overview(
             id                    = patient.id,
             name                  = patient.name,
             phone_number          = patient.phone_number,
+            birth_date            = patient.birth_date,
+            gender                = patient.gender,
             total_records         = len(records),
             last_record_date      = last_rec.record_date.isoformat() if last_rec else None,
             last_submitted_at     = last_sub.submitted_at.isoformat() if last_sub and last_sub.submitted_at else None,

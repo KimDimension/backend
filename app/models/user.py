@@ -32,6 +32,10 @@ class User(Base):
     hospital_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("hospitals.id", ondelete="SET NULL"), nullable=True
     )
+    # 환자 전용: 성별 ('m' = 남, 'f' = 여)
+    gender: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    # 환자 전용: 거주지
+    address: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # 환자 전용: 자기 특이사항 메모 (AI 질문 생성에 활용)
     self_memo: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

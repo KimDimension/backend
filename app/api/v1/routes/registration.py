@@ -172,6 +172,8 @@ def patient_request(payload: PatientRegisterRequest, db: Session = Depends(get_d
         role=UserRole.patient,
         doctor_id=None,
         hospital_id=payload.hospital_id,
+        gender=payload.gender,
+        address=payload.address,
     )
     db.add(user)
     db.commit()
@@ -313,6 +315,7 @@ def list_pending_registrations(
             hospital_name=hospital.name if hospital else None,
             status=reg.status,
             created_at=reg.created_at.isoformat(),
+            request_type=reg.request_type,
         ))
     return result
 

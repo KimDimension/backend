@@ -6,14 +6,16 @@ from pydantic import BaseModel
 
 class DashboardRecordRow(BaseModel):
     """대시보드 테이블에 표시되는 기록 행"""
-    record_id:           int
-    patient_id:          int
-    patient_name:        str
-    submitted_at:        Optional[str]   # ISO 8601 문자열
-    status:              str             # submitted | reviewed | rejected
-    unreviewed_ai_count: int
-    risk_level:          Optional[str]   # normal | caution | urgent | None(미완료)
-    ai_summary:          Optional[str]   # AI 요약 (없으면 None)
+    record_id:            int
+    patient_id:           int
+    patient_name:         str
+    patient_birth_date:   Optional[str] = None   # 나이 계산용
+    patient_gender:       Optional[str] = None   # 'm' | 'f'
+    submitted_at:         Optional[str]           # ISO 8601 문자열
+    status:               str                     # submitted | reviewed | rejected
+    unreviewed_ai_count:  int
+    risk_level:           Optional[str]           # normal | caution | urgent | None(미완료)
+    ai_summary:           Optional[str]           # AI 요약 (없으면 None)
 
 
 class PatientSummary(BaseModel):
@@ -21,6 +23,8 @@ class PatientSummary(BaseModel):
     id:           int
     name:         str
     phone_number: str
+    birth_date:   Optional[str] = None
+    gender:       Optional[str] = None
 
 
 class DashboardResponse(BaseModel):

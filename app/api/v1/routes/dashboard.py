@@ -89,7 +89,7 @@ def get_dashboard(
 		.all()
 	)
 	total_patients = len(all_patients)
-	patients_out = [PatientSummary(id=p.id, name=p.name, phone_number=p.phone_number) for p in all_patients]
+	patients_out = [PatientSummary(id=p.id, name=p.name, phone_number=p.phone_number, birth_date=p.birth_date, gender=p.gender) for p in all_patients]
 
 	# ── 해당 날짜 기록 목록 (환자 정보 JOIN) ─────────────────
 	query = (
@@ -131,14 +131,16 @@ def get_dashboard(
 	# ── 기록 행 조립 ──────────────────────────────────────────
 	records_out = [
 		DashboardRecordRow(
-			record_id           = rec.id,
-			patient_id          = rec.patient_id,
-			patient_name        = patient.name,
-			submitted_at        = rec.submitted_at.isoformat() if rec.submitted_at else None,
-			status              = rec.status.value,
-			unreviewed_ai_count = ai_counts.get(rec.id, 0),
-			risk_level          = rec.risk_level.value if rec.risk_level else None,
-			ai_summary          = rec.ai_summary,
+			record_id            = rec.id,
+			patient_id           = rec.patient_id,
+			patient_name         = patient.name,
+			patient_birth_date   = patient.birth_date,
+			patient_gender       = patient.gender,
+			submitted_at         = rec.submitted_at.isoformat() if rec.submitted_at else None,
+			status               = rec.status.value,
+			unreviewed_ai_count  = ai_counts.get(rec.id, 0),
+			risk_level           = rec.risk_level.value if rec.risk_level else None,
+			ai_summary           = rec.ai_summary,
 		)
 		for rec, patient in day_records
 	]

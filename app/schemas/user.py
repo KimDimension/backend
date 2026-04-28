@@ -27,6 +27,8 @@ class UserResponse(BaseModel):
     role: UserRole
     is_active: bool
     doctor_id: Optional[int] = None   # 환자 전용: 담당 의사 ID
+    gender: Optional[str] = None      # 환자 전용: 'm' | 'f'
+    address: Optional[str] = None     # 환자 전용: 거주지
 
     model_config = {"from_attributes": True}
 
@@ -40,6 +42,7 @@ class UpdateMeRequest(BaseModel):
     current_password: Optional[str] = None   # 프로필·비밀번호 변경 시 필수
     new_password: Optional[str] = None       # 비밀번호 변경 시 필수
     self_memo: Optional[str] = None          # 환자 전용
+    address: Optional[str] = None           # 환자 전용: 거주지 (변경 가능)
 
 
 # ── 의사 프로필 응답 (마이페이지용) ────────────────────────────
@@ -63,7 +66,10 @@ class PatientProfileResponse(BaseModel):
     birth_date: Optional[str] = None
     hospital_name: Optional[str] = None
     doctor_name: Optional[str] = None
+    doctor_id: Optional[int] = None
     self_memo: Optional[str] = None
+    gender: Optional[str] = None    # 'm' | 'f'
+    address: Optional[str] = None
     role: UserRole
 
     model_config = {"from_attributes": True}

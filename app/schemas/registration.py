@@ -31,6 +31,8 @@ class PatientRegisterRequest(BaseModel):
     hospital_id: Optional[int] = None
     phone_number: str
     password: str
+    gender: str = "m"        # 'm' = 남, 'f' = 여 (필수, 기본값 'm')
+    address: Optional[str] = None  # 거주지 (선택)
 
 
 class PatientConnectRequest(BaseModel):
@@ -79,6 +81,7 @@ class PatientRegistrationResponse(BaseModel):
     hospital_name: Optional[str] = None
     status: RegistrationStatus
     created_at: str
+    request_type: Optional[str] = None  # 'connect' | 'discharge'
 
     model_config = {"from_attributes": True}
 

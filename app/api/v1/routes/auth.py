@@ -78,7 +78,10 @@ def get_my_profile(
             birth_date=current_user.birth_date,
             hospital_name=hospital.name if hospital else None,
             doctor_name=doctor.name if doctor else None,
+            doctor_id=current_user.doctor_id,
             self_memo=current_user.self_memo,
+            gender=current_user.gender,
+            address=current_user.address,
             role=current_user.role,
         )
 
@@ -135,6 +138,12 @@ def update_me(
         if current_user.role != UserRole.patient:
             raise HTTPException(status_code=403, detail="환자만 자기 메모를 작성할 수 있습니다.")
         current_user.self_memo = payload.self_memo
+
+    # 환자 거주지 (비밀번호 확인 불필요)
+    if payload.address is not None:
+        if current_user.role != UserRole.patient:
+            raise HTTPException(status_code=403, detail="환자만 거주지를 수정할 수 있습니다.")
+        current_user.address = payload.address or None
 
     db.commit()
     return {"message": "프로필이 업데이트되었습니다.", "name": current_user.name}
