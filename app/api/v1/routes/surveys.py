@@ -17,6 +17,7 @@ from sqlalchemy import desc
 
 from app.core.auth import get_current_user
 from app.core.database import get_db, SessionLocal
+from app.models.patient_assignment import PatientDoctorAssignment
 from app.models.question import AIQuestion, AIQuestionStatus, AIQuestionType, CommonQuestion, QuestionPatientAssignment
 from app.models.patient_note import PatientNote
 from app.models.record import DailyRecord, RiskLevel
@@ -248,6 +249,18 @@ def get_survey_responses(
     if current_user.role != UserRole.doctor:
         raise HTTPException(status_code=403, detail="의사만 접근할 수 있습니다.")
 
+    record_obj = db.query(DailyRecord).filter(DailyRecord.id == record_id).first()
+    if not record_obj:
+        raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다.")
+
+    # 담당 의사인지 확인 (현재 또는 과거 담당 모두 허용)
+    has_access = db.query(PatientDoctorAssignment).filter(
+        PatientDoctorAssignment.doctor_id == current_user.id,
+        PatientDoctorAssignment.patient_id == record_obj.patient_id,
+    ).first()
+    if not has_access:
+        raise HTTPException(status_code=403, detail="해당 환자의 담당 의사가 아닙니다.")
+
     responses = (
         db.query(SurveyResponse)
         .filter(SurveyResponse.daily_record_id == record_id)
@@ -256,22 +269,20 @@ def get_survey_responses(
     resp_map = {(r.question_id, r.question_type): r for r in responses}
 
     from sqlalchemy import or_
-    record_obj = db.query(DailyRecord).filter(DailyRecord.id == record_id).first()
-    _pid = record_obj.patient_id if record_obj else None
+    _pid = record_obj.patient_id
     _assigned_dr = (
         db.query(QuestionPatientAssignment.question_id)
         .filter(QuestionPatientAssignment.patient_id == _pid)
         .subquery()
-    ) if _pid else None
+    )
 
     _cq = db.query(CommonQuestion).filter(CommonQuestion.is_active == True)
-    if _assigned_dr is not None:
-        _cq = _cq.filter(
-            or_(
-                CommonQuestion.target_all_patients == True,
-                CommonQuestion.id.in_(_assigned_dr),
-            )
+    _cq = _cq.filter(
+        or_(
+            CommonQuestion.target_all_patients == True,
+            CommonQuestion.id.in_(_assigned_dr),
         )
+    )
     common_qs = _cq.order_by(CommonQuestion.created_at.asc()).all()
 
     result = []

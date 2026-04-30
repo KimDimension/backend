@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.models.patient_assignment import PatientDoctorAssignment
 from app.models.question import (
     AIQuestion, AIQuestionStatus, AIQuestionType,
     CommonQuestion, QuestionPatientAssignment,
@@ -25,6 +26,15 @@ router = APIRouter(prefix="/questions", tags=["질문"])
 def _require_doctor(current_user: User):
     if current_user.role != UserRole.doctor:
         raise HTTPException(status_code=403, detail="의사만 접근할 수 있습니다.")
+
+
+def _verify_doctor_patient_access(db: Session, doctor_id: int, patient_id: int):
+    """의사-환자 담당 관계 확인 (현재 또는 과거 담당 모두 허용)."""
+    if not db.query(PatientDoctorAssignment).filter(
+        PatientDoctorAssignment.doctor_id == doctor_id,
+        PatientDoctorAssignment.patient_id == patient_id,
+    ).first():
+        raise HTTPException(status_code=403, detail="해당 환자의 담당 의사가 아닙니다.")
 
 
 def _build_response(q: CommonQuestion) -> CommonQuestionResponse:
@@ -314,6 +324,7 @@ def reject_ai_question(
     q = db.query(AIQuestion).filter(AIQuestion.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="질문을 찾을 수 없습니다.")
+    _verify_doctor_patient_access(db, current_user.id, q.patient_id)
 
     if body.scope == "global":
         q.status = AIQuestionStatus.rejected_global
@@ -350,6 +361,7 @@ def restore_ai_question(
     q = db.query(AIQuestion).filter(AIQuestion.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="질문을 찾을 수 없습니다.")
+    _verify_doctor_patient_access(db, current_user.id, q.patient_id)
     if q.status not in (AIQuestionStatus.rejected_for_patient, AIQuestionStatus.rejected_global):
         raise HTTPException(status_code=400, detail="거절된 질문만 복구할 수 있습니다.")
 

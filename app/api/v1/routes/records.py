@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.models.patient_assignment import PatientDoctorAssignment
 from app.crud.daily_record import (
     create_daily_record,
     delete_daily_record,
@@ -32,6 +33,26 @@ def _require_patient(current_user: User):
 def _require_doctor(current_user: User):
     if current_user.role != UserRole.doctor:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="의사만 접근할 수 있습니다.")
+
+
+def _verify_doctor_patient_access(
+    db: Session,
+    doctor_id: int,
+    patient_id: int,
+    current_only: bool = False,
+):
+    """의사-환자 담당 관계 확인. current_only=True면 현재 담당 의사만 허용."""
+    q = db.query(PatientDoctorAssignment).filter(
+        PatientDoctorAssignment.doctor_id == doctor_id,
+        PatientDoctorAssignment.patient_id == patient_id,
+    )
+    if current_only:
+        q = q.filter(PatientDoctorAssignment.ended_at.is_(None))
+    if not q.first():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="해당 환자의 담당 의사가 아닙니다.",
+        )
 
 
 # ── 환자: 기록 제출 ────────────────────────────────────────
@@ -244,6 +265,7 @@ def get_record_detail(
     record = db.query(DailyRecord).filter(DailyRecord.id == record_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다.")
+    _verify_doctor_patient_access(db, current_user.id, record.patient_id)
 
     patient = db.query(User).filter(User.id == record.patient_id).first()
 
@@ -356,6 +378,7 @@ def approve_record(
     record = db.query(DailyRecord).filter(DailyRecord.id == record_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다.")
+    _verify_doctor_patient_access(db, current_user.id, record.patient_id, current_only=True)
     if record.status == RecordStatus.reviewed:
         raise HTTPException(status_code=409, detail="이미 승인된 기록입니다.")
 
@@ -383,6 +406,7 @@ def revert_record(
     record = db.query(DailyRecord).filter(DailyRecord.id == record_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다.")
+    _verify_doctor_patient_access(db, current_user.id, record.patient_id, current_only=True)
     if record.status != RecordStatus.reviewed:
         raise HTTPException(status_code=409, detail="승인된 기록이 아닙니다.")
 
@@ -411,11 +435,20 @@ def bulk_approve_records(
     approved = []
     for rid in body.record_ids:
         r = db.query(DailyRecord).filter(DailyRecord.id == rid).first()
-        if r and r.status != RecordStatus.reviewed:
-            r.status      = RecordStatus.reviewed
-            r.approved_by = current_user.id
-            r.updated_at  = now
-            approved.append(rid)
+        if not r or r.status == RecordStatus.reviewed:
+            continue
+        # 현재 담당 의사인지 확인 (담당 아닌 기록은 skip)
+        has_access = db.query(PatientDoctorAssignment).filter(
+            PatientDoctorAssignment.doctor_id == current_user.id,
+            PatientDoctorAssignment.patient_id == r.patient_id,
+            PatientDoctorAssignment.ended_at.is_(None),
+        ).first()
+        if not has_access:
+            continue
+        r.status      = RecordStatus.reviewed
+        r.approved_by = current_user.id
+        r.updated_at  = now
+        approved.append(rid)
     db.commit()
     return {"approved": approved, "total": len(approved)}
 

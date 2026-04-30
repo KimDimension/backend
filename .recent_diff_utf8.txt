@@ -1,0 +1,366 @@
+﻿diff --git a/app/api/v1/routes/patients.py b/app/api/v1/routes/patients.py
+index d098786..6824303 100644
+--- a/app/api/v1/routes/patients.py
++++ b/app/api/v1/routes/patients.py
+@@ -6,8 +6,8 @@ patients.py ???섏궗???섏옄 愿由?API
+ - scope=past     : ended_at IS NOT NULL ??怨쇨굅 ?대떦 ?섏옄
+ - 湲곕줉 ?묎렐 踰붿쐞 : ?꾩옱 ?대떦 ???꾩껜 湲곕줉 / 怨쇨굅 ?대떦 ???대떦 湲곌컙(~ended_at) ??湲곕줉
+ """
+-from datetime import date, datetime, timezone
+-from typing import List, Optional
++from datetime import date, datetime, timedelta, timezone
++from typing import Any, Dict, List, Optional
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query, status
+ from sqlalchemy import desc, or_
+@@ -32,6 +32,8 @@ class PatientInfo(BaseModel):
+     id:           int
+     name:         str
+     phone_number: str
++    birth_date:   Optional[str] = None
++    gender:       Optional[str] = None
+ 
+ class PatientRecordRow(BaseModel):
+     record_id:    int
+@@ -139,7 +141,7 @@ def list_patients(
+         .order_by(User.name)
+         .all()
+     )
+-    return [PatientInfo(id=p.id, name=p.name, phone_number=p.phone_number) for p in patients]
++    return [PatientInfo(id=p.id, name=p.name, phone_number=p.phone_number, birth_date=p.birth_date, gender=p.gender) for p in patients]
+ 
+ 
+ @router.get(
+@@ -165,7 +167,19 @@ def list_patients_overview(
+         # ended_at IS NULL OR users.doctor_id == current_user.id (?덇굅??
+         q = q.filter(PatientDoctorAssignment.ended_at.is_(None))
+     else:
+-        q = q.filter(PatientDoctorAssignment.ended_at.isnot(None))
++        # ?꾩옱 ???섏궗?먭쾶 ?ㅼ떆 ?대떦 以묒씤 ?섏옄??怨쇨굅 紐⑸줉?먯꽌 ?쒖쇅
++        current_patient_ids_sq = (
++            db.query(PatientDoctorAssignment.patient_id)
++            .filter(
++                PatientDoctorAssignment.doctor_id == current_user.id,
++                PatientDoctorAssignment.ended_at.is_(None),
++            )
++            .subquery()
++        )
++        q = q.filter(
++            PatientDoctorAssignment.ended_at.isnot(None),
++            PatientDoctorAssignment.patient_id.notin_(current_patient_ids_sq),
++        )
+ 
+     assignments = q.order_by(PatientDoctorAssignment.started_at.desc()).all()
+ 
+@@ -494,3 +508,113 @@ def upsert_patient_note(
+     db.commit()
+     db.refresh(note)
+     return PatientNoteResponse(content=note.content, updated_at=note.updated_at.isoformat())
++
++
++# ?? ?섏옄 ?섏튂 ?몃젋??(?섏궗?? ??????????????????????????????????
++
++@router.get(
++    "/{patient_id}/trend",
++    summary="?섏옄 ?섏튂 理쒓렐 異붿씠 (?섏궗??",
++)
++def get_patient_trend(
++    patient_id: int,
++    days: int = Query(default=14, ge=3, le=90),
++    db: Session = Depends(get_db),
++    current_user: User = Depends(get_current_user),
++) -> List[Dict[str, Any]]:
++    _require_doctor(current_user)
++
++    patient = db.query(User).filter(User.id == patient_id, User.role == UserRole.patient).first()
++    if not patient:
++        raise HTTPException(status_code=404, detail="?섏옄瑜?李얠쓣 ???놁뒿?덈떎.")
++
++    assignment = _get_assignment(db, current_user.id, patient_id)
++    if not assignment and patient.doctor_id != current_user.id:
++        raise HTTPException(status_code=403, detail="?묎렐 沅뚰븳???놁뒿?덈떎.")
++
++    cutoff = datetime.now(timezone.utc).date() - timedelta(days=days)
++    records = (
++        db.query(DailyRecord)
++        .filter(
++            DailyRecord.patient_id == patient_id,
++            DailyRecord.record_date >= cutoff,
++            DailyRecord.status.in_(["submitted", "reviewed"]),
++        )
++        .order_by(DailyRecord.record_date)
++        .all()
++    )
++
++    return [
++        {
++            "record_date":            r.record_date.isoformat(),
++            "weight":                 float(r.weight) if r.weight is not None else None,
++            "total_ultrafiltration":  float(r.total_ultrafiltration) if r.total_ultrafiltration is not None else None,
++            "blood_pressure":         r.blood_pressure,
++            "risk_level":             r.risk_level.value if r.risk_level else None,
++        }
++        for r in records
++    ]
++
++
++# ?? 湲곕줉 PDF ?대낫?닿린 (?섏궗?? ?????????????????????????????????
++
++@router.get(
++    "/{patient_id}/records-export",
++    summary="湲곕줉 ?대낫?닿린 HTML (?섏궗??",
++)
++def export_patient_records(
++    patient_id: int,
++    start_date: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
++    end_date:   Optional[str] = Query(default=None, description="YYYY-MM-DD"),
++    db: Session = Depends(get_db),
++    current_user: User = Depends(get_current_user),
++) -> Dict[str, Any]:
++    _require_doctor(current_user)
++
++    patient = db.query(User).filter(User.id == patient_id, User.role == UserRole.patient).first()
++    if not patient:
++        raise HTTPException(status_code=404, detail="?섏옄瑜?李얠쓣 ???놁뒿?덈떎.")
++
++    assignment = _get_assignment(db, current_user.id, patient_id)
++    if not assignment and patient.doctor_id != current_user.id:
++        raise HTTPException(status_code=403, detail="?묎렐 沅뚰븳???놁뒿?덈떎.")
++
++    hospital = db.query(Hospital).filter_by(id=patient.hospital_id).first() if patient.hospital_id else None
++
++    records_q = db.query(DailyRecord).filter(
++        DailyRecord.patient_id == patient_id,
++        DailyRecord.status.in_(["submitted", "reviewed"]),
++    )
++    if start_date:
++        records_q = records_q.filter(DailyRecord.record_date >= date.fromisoformat(start_date))
++    if end_date:
++        records_q = records_q.filter(DailyRecord.record_date <= date.fromisoformat(end_date))
++    records = records_q.order_by(DailyRecord.record_date).all()
++
++    risk_label = {"urgent": "湲닿툒", "caution": "二쇱쓽", "normal": "?뺤긽"}
++
++    return {
++        "patient": {
++            "name":         patient.name,
++            "birth_date":   patient.birth_date,
++            "gender":       "?? if patient.gender == "m" else "?? if patient.gender == "f" else None,
++            "phone_number": patient.phone_number,
++            "hospital":     hospital.name if hospital else None,
++        },
++        "period": {"start": start_date, "end": end_date},
++        "records": [
++            {
++                "record_date":            r.record_date.isoformat(),
++                "weight":                 float(r.weight) if r.weight is not None else None,
++                "blood_pressure":         r.blood_pressure,
++                "total_ultrafiltration":  float(r.total_ultrafiltration) if r.total_ultrafiltration is not None else None,
++                "fasting_blood_glucose":  float(r.fasting_blood_glucose) if r.fasting_blood_glucose is not None else None,
++                "turbid_peritoneal":      r.turbid_peritoneal,
++                "risk_level":             risk_label.get(r.risk_level.value, "") if r.risk_level else "",
++                "memo":                   r.memo or "",
++            }
++            for r in records
++        ],
++        "doctor_name": current_user.name,
++        "exported_at": datetime.now(timezone.utc).isoformat(),
++    }
+diff --git a/app/api/v1/routes/questions.py b/app/api/v1/routes/questions.py
+index ff22571..d2ba87a 100644
+--- a/app/api/v1/routes/questions.py
++++ b/app/api/v1/routes/questions.py
+@@ -270,7 +270,6 @@ def list_ai_questions(
+         .join(User, AIQuestion.patient_id == User.id)
+         .filter(
+             AIQuestion.patient_id.in_(patient_ids),
+-            AIQuestion.status != AIQuestionStatus.rejected_global,
+         )
+     )
+     if patient_id:
+@@ -335,3 +334,36 @@ def reject_ai_question(
+ 
+     db.commit()
+     return {"success": True, "scope": body.scope, "question_id": question_id}
++
++
++@router.post(
++    "/ai/{question_id}/restore",
++    summary="AI 吏덈Ц 蹂듦뎄 (嫄곗젅 ??寃???湲? ?섏궗 ?꾩슜)",
++)
++def restore_ai_question(
++    question_id: int,
++    db: Session = Depends(get_db),
++    current_user: User = Depends(get_current_user),
++):
++    _require_doctor(current_user)
++
++    q = db.query(AIQuestion).filter(AIQuestion.id == question_id).first()
++    if not q:
++        raise HTTPException(status_code=404, detail="吏덈Ц??李얠쓣 ???놁뒿?덈떎.")
++    if q.status not in (AIQuestionStatus.rejected_for_patient, AIQuestionStatus.rejected_global):
++        raise HTTPException(status_code=400, detail="嫄곗젅??吏덈Ц留?蹂듦뎄?????덉뒿?덈떎.")
++
++    if q.status == AIQuestionStatus.rejected_global:
++        db.query(RejectedQPattern).filter(
++            RejectedQPattern.pattern == q.question_text,
++            RejectedQPattern.patient_id.is_(None),
++        ).delete(synchronize_session=False)
++    else:
++        db.query(RejectedQPattern).filter(
++            RejectedQPattern.pattern == q.question_text,
++            RejectedQPattern.patient_id == q.patient_id,
++        ).delete(synchronize_session=False)
++
++    q.status = AIQuestionStatus.pending
++    db.commit()
++    return {"success": True, "question_id": question_id}
+diff --git a/app/api/v1/routes/records.py b/app/api/v1/routes/records.py
+index 4f22558..d079e30 100644
+--- a/app/api/v1/routes/records.py
++++ b/app/api/v1/routes/records.py
+@@ -1,6 +1,8 @@
+ from datetime import datetime, timezone
++from typing import List
+ 
+ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
++from pydantic import BaseModel
+ from sqlalchemy.orm import Session
+ 
+ from app.core.auth import get_current_user
+@@ -12,6 +14,7 @@ from app.crud.daily_record import (
+     get_record_by_id,
+     update_daily_record,
+ )
++from app.models.patient_note import PatientNote
+ from app.models.question import AIQuestion, AIQuestionStatus, CommonQuestion
+ from app.models.record import DailyRecord, ExchangeRecord, RecordStatus
+ from app.models.survey import SurveyResponse
+@@ -177,6 +180,18 @@ def finalize_record(
+     # 怨쇨굅 異붿꽭 ?곗씠??怨꾩궛 (湲곕줉 1媛쒕????쒖슜)
+     historical_context = _compute_historical_context(db, current_user.id, record_id)
+ 
++    # ?섏옄 ?꾨줈??議고쉶 (self_memo + ?대떦 ?섏궗 硫붾え)
++    doctor_note_row = (
++        db.query(PatientNote)
++        .filter(PatientNote.patient_id == current_user.id)
++        .order_by(PatientNote.updated_at.desc())
++        .first()
++    )
++    patient_profile = {
++        "self_memo":   current_user.self_memo if current_user.self_memo else None,
++        "doctor_note": doctor_note_row.content if doctor_note_row and doctor_note_row.content else None,
++    }
++
+     _ai_in_progress.add(record_id)
+     background_tasks.add_task(
+         _ai_question_background,
+@@ -185,6 +200,7 @@ def finalize_record(
+         record_data=record_data,
+         rejected_keys=rejected_keys,
+         historical_context=historical_context,
++        patient_profile=patient_profile,
+     )
+ 
+     db.refresh(record)
+@@ -379,6 +395,31 @@ def revert_record(
+     return {"success": True, "message": "寃??以묒쑝濡??섎룎?몄뒿?덈떎.", "record_id": record_id}
+ 
+ 
++# ?? ?섏궗: 湲곕줉 ?쇨큵 ?뱀씤 ????????????????????????????????????
++class BulkApproveRequest(BaseModel):
++    record_ids: List[int]
++
++
++@router.post("/bulk-approve", summary="湲곕줉 ?쇨큵 ?뱀씤 (?섏궗??")
++def bulk_approve_records(
++    body: BulkApproveRequest,
++    db: Session = Depends(get_db),
++    current_user: User = Depends(get_current_user),
++):
++    _require_doctor(current_user)
++    now = datetime.now(timezone.utc)
++    approved = []
++    for rid in body.record_ids:
++        r = db.query(DailyRecord).filter(DailyRecord.id == rid).first()
++        if r and r.status != RecordStatus.reviewed:
++            r.status      = RecordStatus.reviewed
++            r.approved_by = current_user.id
++            r.updated_at  = now
++            approved.append(rid)
++    db.commit()
++    return {"approved": approved, "total": len(approved)}
++
++
+ # ?? EMR SOAP ?뚯꽌 (Gemini 寃곌낵 ??dict) ????????????????????
+ def _parse_emr_soap(emr_soap: str) -> dict:
+     """
+diff --git a/app/api/v1/routes/surveys.py b/app/api/v1/routes/surveys.py
+index 6e392bc..8f213c3 100644
+--- a/app/api/v1/routes/surveys.py
++++ b/app/api/v1/routes/surveys.py
+@@ -18,6 +18,7 @@ from sqlalchemy import desc
+ from app.core.auth import get_current_user
+ from app.core.database import get_db, SessionLocal
+ from app.models.question import AIQuestion, AIQuestionStatus, AIQuestionType, CommonQuestion, QuestionPatientAssignment
++from app.models.patient_note import PatientNote
+ from app.models.record import DailyRecord, RiskLevel
+ from app.models.survey import SurveyResponse, SurveyChoice, RejectedQPattern
+ from app.models.user import User, UserRole
+@@ -316,11 +317,12 @@ def _ai_question_background(
+     record_data: dict,
+     rejected_keys: list,
+     historical_context: dict = None,
++    patient_profile: dict = None,
+ ):
+     """
+     諛깃렇?쇱슫?쒖뿉??ai/ ?쒕쾭??/ai-questions/generate ?몄텧
+     Gemini媛 KDIGO 湲곕컲?쇰줈 3~5媛?吏덈Ц ?꾨떞 ?앹꽦 ??DB ???-    historical_context濡?怨쇨굅 異붿꽭 諛섏쁺
++    historical_context濡?怨쇨굅 異붿꽭 諛섏쁺, patient_profile濡?媛쒖씤??     """
+     db = SessionLocal()
+     try:
+@@ -340,6 +342,7 @@ def _ai_question_background(
+                     "record_data":        record_data,
+                     "rejected_keys":      rejected_keys,
+                     "historical_context": historical_context or {},
++                    "patient_profile":    patient_profile or {},
+                 },
+             )
+             resp.raise_for_status()
+@@ -363,7 +366,7 @@ def _ai_question_background(
+                 question_text=q_data["question_text"],
+                 reason=q_data.get("reason"),
+                 question_type=q_type,
+-                options=q_data.get("options"),  # ?대? JSON 臾몄옄?대줈 ?꾨떖??+                options=json.dumps(q_data["options"], ensure_ascii=False) if q_data.get("options") is not None else None,
+             ))
+             added += 1
+ 
+@@ -574,6 +577,19 @@ async def complete_survey(
+     # 30??吏묎퀎 而⑦뀓?ㅽ듃 怨꾩궛
+     historical_context = _compute_historical_context(db, current_user.id, record_id)
+ 
++    # ?섏옄 ?꾨줈??議고쉶 (self_memo + ?대떦 ?섏궗 硫붾え)
++    patient_user = db.query(User).filter(User.id == current_user.id).first()
++    doctor_note_row = (
++        db.query(PatientNote)
++        .filter(PatientNote.patient_id == current_user.id)
++        .order_by(PatientNote.updated_at.desc())
++        .first()
++    )
++    patient_profile = {
++        "self_memo":   patient_user.self_memo if patient_user and patient_user.self_memo else None,
++        "doctor_note": doctor_note_row.content if doctor_note_row and doctor_note_row.content else None,
++    }
++
+     # AI ?쒕쾭???붿빟 ?붿껌
+     try:
+         async with httpx.AsyncClient(timeout=60.0) as client:
+@@ -584,6 +600,7 @@ async def complete_survey(
+                     "common_qa":            common_qa,
+                     "ai_survey_responses":  ai_survey_responses,
+                     "historical_context":   historical_context,
++                    "patient_profile":      patient_profile,
+                 },
+             )
+             resp.raise_for_status()
+

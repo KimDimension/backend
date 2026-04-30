@@ -497,6 +497,9 @@ def upsert_patient_note(
     current_user: User = Depends(get_current_user),
 ) -> PatientNoteResponse:
     _require_doctor(current_user)
+    # 현재 담당 의사만 메모 작성 가능
+    if not _get_current_assignment(db, current_user.id, patient_id):
+        raise HTTPException(status_code=403, detail="현재 담당 의사만 메모를 작성할 수 있습니다.")
 
     note = db.query(PatientNote).filter_by(doctor_id=current_user.id, patient_id=patient_id).first()
     if note:
