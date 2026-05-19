@@ -161,6 +161,7 @@ def compute_historical_context(db: Session, patient_id: int, current_record_id: 
             "turbid_peritoneal":     r.turbid_peritoneal,
             "fasting_blood_glucose": float(r.fasting_blood_glucose) if r.fasting_blood_glucose is not None else None,
             "urine_count":           r.urine_count,
+            "note":                  r.memo,
             "exchange_records":      exchange_list,
         })
 
