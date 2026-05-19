@@ -5,6 +5,8 @@ from app.core.auth import (
     verify_password,
     hash_password,
     create_access_token,
+    create_refresh_token,
+    decode_refresh_token,
     get_current_user,
 )
 from app.core.database import get_db
@@ -15,6 +17,10 @@ from app.schemas.user import (
     LoginRequest, TokenResponse, UserResponse,
     UpdateMeRequest, DoctorProfileResponse, PatientProfileResponse,
 )
+from pydantic import BaseModel
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 router = APIRouter(prefix="/auth", tags=["인증"])
 
@@ -35,13 +41,31 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
             detail="비활성화된 계정입니다.",
         )
 
-    token = create_access_token({"sub": str(user.id), "role": user.role})
+    token_data = {"sub": str(user.id), "role": user.role}
+    access_token = create_access_token(token_data)
+    refresh_token = create_refresh_token(token_data)
     return TokenResponse(
-        access_token=token,
+        access_token=access_token,
+        refresh_token=refresh_token,
         user_id=user.id,
         name=user.name,
         role=user.role,
     )
+
+
+@router.post("/refresh")
+def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+    """refresh_token → 새 access_token 발급"""
+    from app.crud.user import get_user_by_id
+    token_payload = decode_refresh_token(payload.refresh_token)
+    user_id = token_payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="유효하지 않은 리프레시 토큰입니다.")
+    user = get_user_by_id(db, user_id=int(user_id))
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="사용자를 찾을 수 없습니다.")
+    new_access_token = create_access_token({"sub": str(user.id), "role": user.role})
+    return {"access_token": new_access_token, "token_type": "bearer"}
 
 
 @router.get("/me", response_model=UserResponse)
