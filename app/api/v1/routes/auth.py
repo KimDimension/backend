@@ -44,6 +44,11 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     token_data = {"sub": str(user.id), "role": user.role}
     access_token = create_access_token(token_data)
     refresh_token = create_refresh_token(token_data)
+
+    # refresh token DB 저장
+    user.refresh_token = refresh_token
+    db.commit()
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -55,7 +60,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
 @router.post("/refresh")
 def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
-    """refresh_token → 새 access_token 발급"""
+    """refresh_token → 새 access_token + 새 refresh_token 발급 (토큰 회전)"""
     from app.crud.user import get_user_by_id
     token_payload = decode_refresh_token(payload.refresh_token)
     user_id = token_payload.get("sub")
@@ -64,8 +69,27 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
     user = get_user_by_id(db, user_id=int(user_id))
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="사용자를 찾을 수 없습니다.")
-    new_access_token = create_access_token({"sub": str(user.id), "role": user.role})
-    return {"access_token": new_access_token, "token_type": "bearer"}
+
+    # DB에 저장된 refresh token과 비교 (탈취 토큰 차단)
+    if user.refresh_token != payload.refresh_token:
+        raise HTTPException(status_code=401, detail="유효하지 않은 리프레시 토큰입니다.")
+
+    # 토큰 회전: 새 access + 새 refresh 발급 후 DB 갱신
+    token_data = {"sub": str(user.id), "role": user.role}
+    new_access_token = create_access_token(token_data)
+    new_refresh_token = create_refresh_token(token_data)
+    user.refresh_token = new_refresh_token
+    db.commit()
+
+    return {"access_token": new_access_token, "refresh_token": new_refresh_token, "token_type": "bearer"}
+
+
+@router.post("/logout")
+def logout(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """로그아웃 — DB의 refresh token 무효화"""
+    current_user.refresh_token = None
+    db.commit()
+    return {"message": "로그아웃되었습니다."}
 
 
 @router.get("/me", response_model=UserResponse)

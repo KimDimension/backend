@@ -94,13 +94,15 @@ def _get_current_assignment(
     doctor_id: int,
     patient_id: int,
 ) -> Optional[PatientDoctorAssignment]:
-    """현재 담당 assignment (ended_at IS NULL)"""
+    """현재 담당 assignment (ended_at IS NULL, started_at <= now)"""
+    now = datetime.now(timezone.utc)
     return (
         db.query(PatientDoctorAssignment)
         .filter(
             PatientDoctorAssignment.doctor_id == doctor_id,
             PatientDoctorAssignment.patient_id == patient_id,
             PatientDoctorAssignment.ended_at.is_(None),
+            PatientDoctorAssignment.started_at <= now,
         )
         .first()
     )
@@ -125,6 +127,7 @@ def list_patients(
         .filter(
             PatientDoctorAssignment.doctor_id == current_user.id,
             PatientDoctorAssignment.ended_at.is_(None),
+            PatientDoctorAssignment.started_at <= datetime.now(timezone.utc),
         )
         .subquery()
     )

@@ -10,6 +10,7 @@ AI 백그라운드 작업 서비스
 """
 import json
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -133,15 +134,21 @@ def compute_historical_context(db: Session, patient_id: int, current_record_id: 
     }
 
     # ── ai/ 서버용 raw historical_records 구성 ────────────────────
+    # N+1 방지: 전체 record_id로 exchange_records를 한 번에 bulk 조회
+    record_ids = [r.id for r in records]
+    all_exchanges = (
+        db.query(ExchangeRecord)
+        .filter(ExchangeRecord.daily_record_id.in_(record_ids))
+        .order_by(ExchangeRecord.daily_record_id, ExchangeRecord.session_number)
+        .all()
+    )
+    exchanges_by_record: dict = defaultdict(list)
+    for ex in all_exchanges:
+        exchanges_by_record[ex.daily_record_id].append(ex)
+
     historical_records = []
     for r in records:
-        # exchange_records 조회
-        exchanges = (
-            db.query(ExchangeRecord)
-            .filter(ExchangeRecord.daily_record_id == r.id)
-            .order_by(ExchangeRecord.session_number)
-            .all()
-        )
+        exchanges = exchanges_by_record[r.id]
         exchange_list = [
             {
                 "session_number":         ex.session_number,

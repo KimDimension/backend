@@ -264,12 +264,14 @@ def list_ai_questions(
 ):
     _require_doctor(current_user)
 
-    my_patients = (
-        db.query(User)
-        .filter(User.doctor_id == current_user.id, User.is_active == True)
-        .all()
-    )
-    patient_ids = [p.id for p in my_patients]
+    patient_ids = [
+        row[0]
+        for row in db.query(PatientDoctorAssignment.patient_id).filter(
+            PatientDoctorAssignment.doctor_id == current_user.id,
+            PatientDoctorAssignment.ended_at.is_(None),
+            PatientDoctorAssignment.started_at <= datetime.now(timezone.utc),
+        ).all()
+    ]
 
     if not patient_ids:
         return []

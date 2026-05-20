@@ -46,7 +46,11 @@ def _verify_doctor_patient_access(
         PatientDoctorAssignment.patient_id == patient_id,
     )
     if current_only:
-        q = q.filter(PatientDoctorAssignment.ended_at.is_(None))
+        now = datetime.now(timezone.utc)
+        q = q.filter(
+            PatientDoctorAssignment.ended_at.is_(None),
+            PatientDoctorAssignment.started_at <= now,
+        )
     if not q.first():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

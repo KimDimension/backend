@@ -39,6 +39,8 @@ class User(Base):
     # 환자 전용: 자기 특이사항 메모 (AI 질문 생성에 활용)
     self_memo: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # refresh token DB 저장 (1 user = 1 active refresh token, 탈취 방어용)
+    refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

@@ -566,7 +566,9 @@ async def stream_ai_questions(
         raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
 
     current_user = db.query(User).filter(User.id == int(user_id)).first()
-    if not current_user or current_user.role != UserRole.patient:
+    if not current_user or not current_user.is_active:
+        raise HTTPException(status_code=401, detail="사용자를 찾을 수 없습니다.")
+    if current_user.role != UserRole.patient:
         raise HTTPException(status_code=403, detail="환자만 접근할 수 있습니다.")
 
     record = db.query(DailyRecord).filter(DailyRecord.id == record_id).first()
@@ -706,6 +708,10 @@ async def stream_ai_questions(
                     },
                     headers={"Content-Type": "application/json"},
                 ) as resp:
+                    if resp.status_code >= 400:
+                        error_data = json.dumps({"message": f"AI 서버 오류 ({resp.status_code})"}, ensure_ascii=False)
+                        yield f"event: error\ndata: {error_data}\n\n"
+                        return
                     idx = 0
                     buffer = ""
                     async for chunk in resp.aiter_text():
