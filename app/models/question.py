@@ -105,6 +105,7 @@ class AIQuestion(Base):
         nullable=False,
     )
     options: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    rejected_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[AIQuestionStatus] = mapped_column(
         Enum(AIQuestionStatus, name="ai_question_status_enum"),
         default=AIQuestionStatus.pending,

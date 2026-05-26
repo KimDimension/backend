@@ -250,7 +250,8 @@ def toggle_common_question(
 
 # ── AI 질문 ────────────────────────────────────────────────
 class AIQuestionRejectRequest(BaseModel):
-    scope: str  # "patient" | "global"
+    scope: str                        # "patient" | "global"
+    reason: Optional[str] = None      # 거절 이유 (선택)
 
 
 @router.get(
@@ -300,9 +301,10 @@ def list_ai_questions(
             "record_date":   record.record_date.isoformat(),
             "question_text": q.question_text,
             "question_type": q.question_type.value,
-            "reason":        q.reason,
-            "status":        q.status.value,
-            "created_at":    q.created_at.isoformat(),
+            "reason":           q.reason,
+            "rejected_reason":  q.rejected_reason,
+            "status":           q.status.value,
+            "created_at":       q.created_at.isoformat(),
         }
         for q, record, patient in rows
     ]
@@ -344,6 +346,9 @@ def reject_ai_question(
         ).first()
         if not existing:
             db.add(RejectedQPattern(pattern=q.question_text, patient_id=q.patient_id))
+
+    if body.reason:
+        q.rejected_reason = body.reason.strip()
 
     db.commit()
     return {"success": True, "scope": body.scope, "question_id": question_id}
