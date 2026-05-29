@@ -117,16 +117,26 @@ def get_my_profile(
             role=current_user.role,
         )
     else:
-        hospital = db.query(Hospital).filter_by(id=current_user.hospital_id).first() if current_user.hospital_id else None
         doctor = db.query(User).filter_by(id=current_user.doctor_id).first() if current_user.doctor_id else None
+        # 담당 의사의 소속 병원 조회
+        doctor_hospital_name: str | None = None
+        doctor_phone: str | None = None
+        if doctor:
+            doctor_phone = doctor.phone_number
+            doc_profile = db.query(DoctorProfile).filter_by(user_id=doctor.id).first()
+            if doc_profile and doc_profile.hospital_id:
+                doc_hosp = db.query(Hospital).filter_by(id=doc_profile.hospital_id).first()
+                doctor_hospital_name = doc_hosp.name if doc_hosp else None
         return PatientProfileResponse(
             id=current_user.id,
             name=current_user.name,
             phone_number=current_user.phone_number,
             birth_date=current_user.birth_date,
-            hospital_name=hospital.name if hospital else None,
+            hospital_name=doctor_hospital_name,  # 담당 의사의 병원으로 표시
             doctor_name=doctor.name if doctor else None,
             doctor_id=current_user.doctor_id,
+            doctor_phone=doctor_phone,
+            doctor_hospital=doctor_hospital_name,
             self_memo=current_user.self_memo,
             gender=current_user.gender,
             address=current_user.address,
@@ -140,58 +150,33 @@ def update_me(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """마이페이지 수정 — 이름/생년월일/전화번호/비밀번호/환자 자기메모
+    """마이페이지 수정 — 비밀번호/환자 자기메모
 
-    이름·생년월일·전화번호·비밀번호 변경 시 current_password 필수.
-    self_memo(환자 전용)는 비밀번호 확인 없이 저장 가능.
+    비밀번호 변경 시 current_password 필수.
+    self_memo(환자 전용)은 별도 비밀번호 확인 없이 저장 가능.
+    이름·생년월일·전화번호는 UI에서 수정 불가 처리됨.
     """
-    # 비밀번호 확인이 필요한 변경 감지
-    needs_pw = (
-        (payload.name is not None and payload.name != current_user.name)
-        or (payload.birth_date is not None and payload.birth_date != current_user.birth_date)
-        or (payload.phone_number is not None and payload.phone_number != current_user.phone_number)
-        or bool(payload.new_password)
-    )
-    if needs_pw:
+    # 비밀번호 변경 시 현재 비밀번호 필수
+    if payload.new_password:
         if not payload.current_password:
             raise HTTPException(status_code=400, detail="현재 비밀번호를 입력해주세요.")
         if not verify_password(payload.current_password, current_user.password_hash):
             raise HTTPException(status_code=400, detail="현재 비밀번호가 올바르지 않습니다.")
-
-    # 이름 변경
-    if payload.name is not None and payload.name != current_user.name:
-        if not payload.name.strip():
-            raise HTTPException(status_code=400, detail="이름을 입력해주세요.")
-        current_user.name = payload.name.strip()
-
-    # 생년월일 변경
-    if payload.birth_date is not None and payload.birth_date != current_user.birth_date:
-        current_user.birth_date = payload.birth_date or None
-
-    # 전화번호 변경
-    if payload.phone_number and payload.phone_number != current_user.phone_number:
-        existing = get_user_by_phone(db, payload.phone_number)
-        if existing:
-            raise HTTPException(status_code=409, detail="이미 사용 중인 전화번호입니다.")
-        current_user.phone_number = payload.phone_number
-
-    # 비밀번호 변경
-    if payload.new_password:
         if len(payload.new_password) < 6:
             raise HTTPException(status_code=400, detail="비밀번호는 6자 이상이어야 합니다.")
         current_user.password_hash = hash_password(payload.new_password)
 
-    # 환자 자기 메모 (비밀번호 확인 불필요)
+    # 환자 자기 메모
     if payload.self_memo is not None:
         if current_user.role != UserRole.patient:
             raise HTTPException(status_code=403, detail="환자만 자기 메모를 작성할 수 있습니다.")
         current_user.self_memo = payload.self_memo
 
-    # 환자 거주지 (비밀번호 확인 불필요)
+    # 환자 거주지
     if payload.address is not None:
         if current_user.role != UserRole.patient:
             raise HTTPException(status_code=403, detail="환자만 거주지를 수정할 수 있습니다.")
-        current_user.address = payload.address or None
+        current_user.address = payload.address
 
     db.commit()
     return {"message": "프로필이 업데이트되었습니다.", "name": current_user.name}
