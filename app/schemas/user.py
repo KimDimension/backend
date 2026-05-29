@@ -65,9 +65,11 @@ class PatientProfileResponse(BaseModel):
     name: str
     phone_number: str
     birth_date: Optional[str] = None
-    hospital_name: Optional[str] = None
+    hospital_name: Optional[str] = None   # 담당 의사의 소속 병원
     doctor_name: Optional[str] = None
     doctor_id: Optional[int] = None
+    doctor_phone: Optional[str] = None    # 담당 의사 전화번호
+    doctor_hospital: Optional[str] = None # 담당 의사 소속 병원명 (명시적 분리)
     self_memo: Optional[str] = None
     gender: Optional[str] = None    # 'm' | 'f'
     address: Optional[str] = None
