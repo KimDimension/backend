@@ -1,5 +1,5 @@
-from datetime import datetime, timezone
-from typing import List
+from datetime import date, datetime, timezone
+from typing import List, Optional
 
 from sqlalchemy.orm import Session, joinedload
 
@@ -45,15 +45,18 @@ def create_daily_record(
     return record
 
 
-def get_patient_records(db: Session, patient_id: int) -> List[DailyRecord]:
-    """환자의 기록 목록 (최신순)"""
-    return (
+def get_patient_records(
+    db: Session, patient_id: int, record_date: Optional[date] = None
+) -> List[DailyRecord]:
+    """환자의 기록 목록 (최신순). record_date 지정 시 해당 날짜만 반환."""
+    q = (
         db.query(DailyRecord)
         .options(joinedload(DailyRecord.exchange_records))
         .filter(DailyRecord.patient_id == patient_id)
-        .order_by(DailyRecord.record_date.desc())
-        .all()
     )
+    if record_date is not None:
+        q = q.filter(DailyRecord.record_date == record_date)
+    return q.order_by(DailyRecord.record_date.desc()).all()
 
 
 def update_daily_record(

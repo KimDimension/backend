@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
-from typing import List
+from datetime import date, datetime, timezone
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -90,9 +90,10 @@ def submit_record(
 def get_my_records(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    date: Optional[date] = Query(None, description="날짜 필터 (YYYY-MM-DD)"),
 ):
     _require_patient(current_user)
-    return get_patient_records(db, patient_id=current_user.id)
+    return get_patient_records(db, patient_id=current_user.id, record_date=date)
 
 
 # ── 환자: 단건 조회 ────────────────────────────────────────
