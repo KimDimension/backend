@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.models.hospital import Hospital
+from app.models.hospital import Hospital, DoctorProfile
 from app.models.patient_assignment import PatientDoctorAssignment
 from app.models.patient_note import PatientNote
 from app.models.record import DailyRecord, RecordStatus
@@ -590,7 +590,8 @@ def export_patient_records(
     if not assignment and patient.doctor_id != current_user.id:
         raise HTTPException(status_code=403, detail="접근 권한이 없습니다.")
 
-    hospital = db.query(Hospital).filter_by(id=patient.hospital_id).first() if patient.hospital_id else None
+    doctor_profile = db.query(DoctorProfile).filter_by(user_id=current_user.id).first()
+    hospital = db.query(Hospital).filter_by(id=doctor_profile.hospital_id).first() if doctor_profile and doctor_profile.hospital_id else None
 
     records_q = db.query(DailyRecord).filter(
         DailyRecord.patient_id == patient_id,
