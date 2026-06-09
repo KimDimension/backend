@@ -424,21 +424,59 @@ def bulk_approve_records(
 # ── EMR SOAP 파서 (Gemini 결과 → dict) ────────────────────
 def _parse_emr_soap(emr_soap: str) -> dict:
     """
-    Gemini가 생성한 "S: ...\nO: ...\nA: ...\nP: ..." 문자열을 파싱.
-    섹션 경계를 기준으로 분할하여 각 내용을 추출.
-    섹션이 없으면 빈 문자열 반환.
+    Gemini가 생성한 SOAP 문자열을 파싱.
+
+    지원하는 섹션명 변형:
+      표준:      S: / O: / A: / P:
+      괄호 포함: S (Subjective): / O (Objective): / A (Assessment): / P (Plan):
+      한글:      주관적: / 객관적: / 평가: / 계획:
+      혼합:      S(주관): / O(객관): 등
+
+    섹션이 하나도 없으면 전체 텍스트를 S에 넣고 나머지는 빈 문자열 반환.
     """
     import re
+
     result = {"S": "", "O": "", "A": "", "P": ""}
-    # 각 SOAP 섹션 시작 위치를 순서대로 탐색
-    pattern = re.compile(r'(?:^|\n)([SOAP]):\s*')
-    matches = list(pattern.finditer(emr_soap))
-    for i, m in enumerate(matches):
-        key = m.group(1)
-        content_start = m.end()
-        # 다음 섹션 시작 직전까지 추출 (P는 문자열 끝까지)
-        content_end = matches[i + 1].start() if i + 1 < len(matches) else len(emr_soap)
+
+    # 각 SOAP 키에 대응하는 정규식 패턴 (우선순위: 표준 → 괄호 → 한글)
+    _SECTION_PATTERNS = [
+        # (key, regex)
+        ("S", r"(?:^|\n)\s*S(?:\s*[\(\[]?[Ss]ubjective[^\)\]]*[\)\]]?)?\s*(?:주관적|주관)?\s*:"),
+        ("O", r"(?:^|\n)\s*O(?:\s*[\(\[]?[Oo]bjective[^\)\]]*[\)\]]?)?\s*(?:객관적|객관)?\s*:"),
+        ("A", r"(?:^|\n)\s*A(?:\s*[\(\[]?[Aa]ssessment[^\)\]]*[\)\]]?)?\s*(?:평가|소견)?\s*:"),
+        ("P", r"(?:^|\n)\s*P(?:\s*[\(\[]?[Pp]lan[^\)\]]*[\)\]]?)?\s*(?:계획|처치)?\s*:"),
+        # 한글 단독 섹션명
+        ("S", r"(?:^|\n)\s*주관적\s*:"),
+        ("O", r"(?:^|\n)\s*객관적\s*:"),
+        ("A", r"(?:^|\n)\s*(?:평가|소견|임상소견)\s*:"),
+        ("P", r"(?:^|\n)\s*(?:계획|처치|조치)\s*:"),
+    ]
+
+    # 모든 패턴에서 매치 위치를 수집 → (position, key, match_end) 리스트
+    found: list[tuple[int, str, int]] = []
+    for key, pat in _SECTION_PATTERNS:
+        for m in re.finditer(pat, emr_soap, re.IGNORECASE):
+            found.append((m.start(), key, m.end()))
+
+    if not found:
+        # 섹션 구분 전혀 없으면 전문을 S에 넣고 반환
+        result["S"] = emr_soap.strip()
+        return result
+
+    # 위치 순 정렬 후 중복 위치 제거 (같은 위치에서 첫 번째만 유지)
+    found.sort(key=lambda x: x[0])
+    deduped: list[tuple[int, str, int]] = []
+    seen_positions: set[int] = set()
+    for pos, key, end in found:
+        if pos not in seen_positions:
+            deduped.append((pos, key, end))
+            seen_positions.add(pos)
+
+    # 섹션별 내용 추출 (다음 섹션 시작 직전까지)
+    for i, (pos, key, content_start) in enumerate(deduped):
+        content_end = deduped[i + 1][0] if i + 1 < len(deduped) else len(emr_soap)
         result[key] = emr_soap[content_start:content_end].strip()
+
     return result
 
 

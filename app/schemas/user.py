@@ -17,6 +17,7 @@ class TokenResponse(BaseModel):
     user_id: int
     name: str
     role: UserRole
+    doctor_id: Optional[int] = None   # 환자 전용: 담당 의사 ID (없으면 null)
 
 
 # ── 유저 정보 응답 ─────────────────────────────────────────────

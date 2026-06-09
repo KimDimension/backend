@@ -55,6 +55,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         user_id=user.id,
         name=user.name,
         role=user.role,
+        doctor_id=user.doctor_id,   # 환자는 담당 의사 ID, 의사/admin은 null
     )
 
 
