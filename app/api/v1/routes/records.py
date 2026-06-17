@@ -39,23 +39,47 @@ def _verify_doctor_patient_access(
     doctor_id: int,
     patient_id: int,
     current_only: bool = False,
+    record_date=None,
 ):
-    """의사-환자 담당 관계 확인. current_only=True면 현재 담당 의사만 허용."""
-    q = db.query(PatientDoctorAssignment).filter(
+    """
+    접근 권한 규칙:
+    - current_only=True: 현재 담당 의사만 허용 (쓰기 작업용)
+    - record_date 지정 시:
+      · 현재 담당 중(ended_at IS NULL) → 전체 기록 허용 (하한 없음)
+      · 과거 담당 → record_date <= MAX(ended_at) 인 기록만 허용
+        (담당 시작 이전 기록도 열람 가능, 담당 종료 이후 기록은 차단)
+    """
+    assignments = db.query(PatientDoctorAssignment).filter(
         PatientDoctorAssignment.doctor_id == doctor_id,
         PatientDoctorAssignment.patient_id == patient_id,
-    )
+    ).all()
+
     if current_only:
         now = datetime.now(timezone.utc)
-        q = q.filter(
-            PatientDoctorAssignment.ended_at.is_(None),
-            PatientDoctorAssignment.started_at <= now,
-        )
-    if not q.first():
+        active = [a for a in assignments if a.ended_at is None and a.started_at <= now]
+        if not active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="해당 환자의 담당 의사가 아닙니다.",
+            )
+        return
+
+    if not assignments:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="해당 환자의 담당 의사가 아닙니다.",
         )
+
+    if record_date is not None:
+        is_current = any(a.ended_at is None for a in assignments)
+        if not is_current:
+            max_ended_at = max(a.ended_at for a in assignments)
+            max_ended_date = max_ended_at.date() if hasattr(max_ended_at, "date") else max_ended_at
+            if record_date > max_ended_date:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="담당 종료 이후의 기록에는 접근할 수 없습니다.",
+                )
 
 
 # ── 환자: 기록 제출 ────────────────────────────────────────
@@ -207,7 +231,7 @@ def get_record_detail(
     record = db.query(DailyRecord).filter(DailyRecord.id == record_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다.")
-    _verify_doctor_patient_access(db, current_user.id, record.patient_id)
+    _verify_doctor_patient_access(db, current_user.id, record.patient_id, record_date=record.record_date)
 
     patient = db.query(User).filter(User.id == record.patient_id).first()
 
