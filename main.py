@@ -136,7 +136,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:3000",
-        "https://capd-frontend-cdwaxwdxfa-du.a.run.app",  # GCP Cloud Run
+        "https://capd-frontend-cdwaxwdxfa-du.a.run.app",  # GCP Cloud Run (old)
+        "https://capd-frontend-675812688902.asia-northeast3.run.app",  # GCP Cloud Run (new)
     ],
     allow_credentials=True,
     allow_methods=["*"],
